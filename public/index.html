@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f5f0e8" />
+    <meta
+      name="description"
+      content="Mira is a warm, privacy-aware AI companion that responds to your words, vocal energy, expressions, and posture."
+    />
+    <title>Mira — A companion that notices</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css?v=6" />
+  </head>
+  <body>
+    <div class="ambient ambient-one" aria-hidden="true"></div>
+    <div class="ambient ambient-two" aria-hidden="true"></div>
+
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="Mira home">
+        <span class="brand-mark" aria-hidden="true">
+          <span></span><span></span><span></span>
+        </span>
+        <span>Mira</span>
+      </a>
+      <div class="privacy-pill">
+        <span class="privacy-dot" aria-hidden="true"></span>
+        Your camera stays on this device
+      </div>
+      <button class="icon-button" id="settingsButton" aria-label="Open connection status" title="Connection status">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.25A3.25 3.25 0 1 0 12 8.75a3.25 3.25 0 0 0 0 6.5Zm8-3.25c0-.5-.05-.98-.14-1.45l1.72-1.34-2-3.46-2.02.82a8.03 8.03 0 0 0-2.5-1.45L14.75 3h-4.5l-.31 2.12a8.03 8.03 0 0 0-2.5 1.45l-2.02-.82-2 3.46 1.72 1.34A8.21 8.21 0 0 0 5 12c0 .5.05.98.14 1.45l-1.72 1.34 2 3.46 2.02-.82a8.03 8.03 0 0 0 2.5 1.45l.31 2.12h4.5l.31-2.12a8.03 8.03 0 0 0 2.5-1.45l2.02.82 2-3.46-1.72-1.34c.09-.47.14-.95.14-1.45Z"/></svg>
+      </button>
+    </header>
+
+    <main class="app-shell">
+      <section class="presence-panel" aria-label="Mira avatar">
+        <div class="session-line">
+          <span class="status-dot" id="statusDot" aria-hidden="true"></span>
+          <span id="sessionStatus">Ready when you are</span>
+          <span class="session-timer" id="sessionTimer">00:00</span>
+        </div>
+
+        <div class="avatar-stage" id="avatarStage">
+          <div class="halo halo-back" aria-hidden="true"></div>
+          <div class="halo halo-front" aria-hidden="true"></div>
+          <div class="orbit orbit-one" aria-hidden="true"></div>
+          <div class="orbit orbit-two" aria-hidden="true"></div>
+          <img
+            class="avatar"
+            id="avatar"
+            src="./assets/mira-avatar.png"
+            alt="Mira, a warm and attentive virtual companion"
+          />
+          <div class="speech-ripple" aria-hidden="true">
+            <span></span><span></span><span></span><span></span><span></span>
+          </div>
+          <div class="camera-preview" id="cameraPreview" hidden>
+            <video id="userVideo" autoplay muted playsinline aria-label="Your camera preview"></video>
+            <canvas id="frameCanvas" aria-hidden="true"></canvas>
+            <span>Only you can see this preview</span>
+          </div>
+        </div>
+
+        <div class="avatar-copy">
+          <p class="eyebrow">Meet Mira</p>
+          <h1 id="avatarHeadline">A calm space to be heard.</h1>
+          <p id="avatarSubline">I’ll listen to your words and the little cues around them—at your pace.</p>
+        </div>
+
+        <div class="primary-controls">
+          <button class="primary-button" id="startButton">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21H8v2h8v-2h-3v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
+            <span>Begin a conversation</span>
+          </button>
+          <button class="round-control" id="cameraButton" aria-label="Toggle camera" title="Toggle camera" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h11a2 2 0 0 1 2 2v2.17l4-2V17l-4-2.17V17a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z"/></svg>
+          </button>
+          <button class="round-control" id="muteButton" aria-label="Mute microphone" title="Mute microphone" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21H8v2h8v-2h-3v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
+          </button>
+        </div>
+      </section>
+
+      <aside class="understanding-panel" aria-label="Conversation and live cues">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">In this moment</p>
+            <h2>What Mira notices</h2>
+          </div>
+          <button class="text-button" id="privacyButton">How it works</button>
+        </div>
+
+        <div class="cue-grid" aria-live="polite">
+          <article class="cue-card expression-card">
+            <div class="cue-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z"/></svg>
+            </div>
+            <div><span>Expression</span><strong id="expressionCue">Waiting for camera</strong></div>
+          </article>
+          <article class="cue-card tone-card">
+            <div class="cue-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 12v3m4-7v11m4-15v16m4-12v11m4-7v3"/></svg>
+            </div>
+            <div><span>Vocal energy</span><strong id="toneCue">Waiting for microphone</strong></div>
+          </article>
+          <article class="cue-card posture-card">
+            <div class="cue-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M12 5.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4ZM8 22v-6l-3-3 1.5-1.5L10 14V8H7V6h10v2h-3v6l3.5-2.5L19 13l-3 3v6h-2l-2-5-2 5H8Z"/></svg>
+            </div>
+            <div><span>Posture</span><strong id="postureCue">Waiting for camera</strong></div>
+          </article>
+        </div>
+
+        <div class="reflection-card" id="reflectionCard">
+          <div class="reflection-mark" aria-hidden="true">“</div>
+          <p id="reflectionText">Nothing is being judged. These are gentle, momentary cues—not conclusions about how you feel.</p>
+        </div>
+
+        <div class="conversation" id="conversation" aria-live="polite" aria-label="Conversation transcript">
+          <div class="message mira-message">
+            <span class="message-author">Mira</span>
+            <p>I’m here. We can talk, sit quietly, or start with one small thing that’s on your mind.</p>
+          </div>
+        </div>
+
+        <form class="message-composer" id="messageForm">
+          <label class="sr-only" for="messageInput">Type a message to Mira</label>
+          <input id="messageInput" type="text" autocomplete="off" placeholder="Or type what’s on your mind…" maxlength="1000" />
+          <button type="submit" aria-label="Send message">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 12 16-8-5 16-3-6-8-2Zm8 2 3-4"/></svg>
+          </button>
+        </form>
+      </aside>
+    </main>
+
+    <footer class="site-footer">
+      <p>Mira offers companionship, not medical advice or crisis support.</p>
+      <button id="resetButton">Reset session</button>
+    </footer>
+
+    <dialog class="dialog consent-dialog" id="consentDialog">
+      <form method="dialog" class="dialog-card" id="consentForm">
+        <button class="dialog-close" value="cancel" aria-label="Close">×</button>
+        <div class="dialog-symbol consent-symbol" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Zm-3-10 2 2 4-5"/></svg>
+        </div>
+        <p class="eyebrow">Before we begin</p>
+        <h2>You choose what Mira can notice.</h2>
+        <p class="dialog-intro">Turn on only what feels comfortable. You can switch either one off at any time.</p>
+        <label class="permission-row">
+          <span class="permission-icon"><svg viewBox="0 0 24 24"><path d="M4 5h11a2 2 0 0 1 2 2v2.17l4-2V17l-4-2.17V17a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z"/></svg></span>
+          <span><strong>Camera</strong><small>Read facial and posture cues on this device</small></span>
+          <input type="checkbox" id="cameraConsent" checked />
+          <span class="toggle" aria-hidden="true"></span>
+        </label>
+        <label class="permission-row">
+          <span class="permission-icon"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92"/></svg></span>
+          <span><strong>Microphone</strong><small>Hear your words and vocal energy</small></span>
+          <input type="checkbox" id="micConsent" checked />
+          <span class="toggle" aria-hidden="true"></span>
+        </label>
+        <div class="plain-language"><strong>Private by design</strong><span>Local cue labels aren’t recorded. When AI mode is connected, live audio and sampled video frames are sent to Google Gemini for the conversation.</span></div>
+        <button class="primary-button full-width" id="allowButton" value="default">Allow &amp; begin</button>
+        <button class="secondary-button" id="textOnlyButton" value="cancel" type="button">Continue with text only</button>
+      </form>
+    </dialog>
+
+    <dialog class="dialog settings-dialog" id="settingsDialog">
+      <form method="dialog" class="dialog-card" id="settingsForm">
+        <button class="dialog-close" value="cancel" aria-label="Close">×</button>
+        <div class="dialog-symbol key-symbol" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M15 7a5 5 0 1 0-4.6 6.97L13 16.5V19h2.5v2H19v-3.5l-5-5A5 5 0 0 0 15 7Z"/></svg>
+        </div>
+        <p class="eyebrow">AI connection</p>
+        <h2>Gemini Live status</h2>
+        <p class="dialog-intro">Mira connects automatically using Google’s free tier. The permanent key stays on the server and is never sent to your browser.</p>
+        <div class="plain-language" role="status" aria-live="polite">
+          <strong id="geminiStatusHeading">Connecting automatically…</strong>
+          <span id="connectionNote">Securing a one-use, short-lived token for this visit.</span>
+        </div>
+        <button class="primary-button full-width" id="connectButton" value="cancel" type="button" hidden>Retry Gemini Live</button>
+      </form>
+    </dialog>
+
+    <dialog class="dialog" id="privacyDialog">
+      <form method="dialog" class="dialog-card information-card">
+        <button class="dialog-close" value="cancel" aria-label="Close">×</button>
+        <p class="eyebrow">Plain-language privacy</p>
+        <h2>What happens to your signals?</h2>
+        <ul class="privacy-list">
+          <li><strong>Expression &amp; posture</strong><span>MediaPipe analyses frames locally. Mira shows broad cues, never a diagnosis.</span></li>
+          <li><strong>Vocal energy</strong><span>Your browser measures volume locally. It does not decide your emotion.</span></li>
+          <li><strong>AI conversation</strong><span>If you connect Gemini, audio and up to one camera frame per second can be sent to Google under its free-tier data terms.</span></li>
+          <li><strong>Storage</strong><span>Mira does not save your video, local cue labels, or transcript. The permanent Gemini key stays in encrypted server configuration.</span></li>
+        </ul>
+        <button class="primary-button full-width" value="default">Got it</button>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script type="module" src="./app.js?v=6"></script>
+  </body>
+</html>
