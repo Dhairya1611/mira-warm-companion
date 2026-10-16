@@ -1,0 +1,9 @@
+{
+  "name": "mira-warm-companion",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bash scripts/build.sh",
+    "test": "node tests/smoke.mjs && node scripts/validate-artifact.mjs"
+  }
+}
