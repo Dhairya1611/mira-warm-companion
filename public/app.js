@@ -109,10 +109,15 @@ const state = {
   liveConnected: false,
   connecting: false,
   connectionPromise: null,
+  connectionId: 0,
+  liveSessionHandle: "",
+  reconnectTimer: null,
+  reconnectAttempts: 0,
   tokenRequestAttempted: false,
   audioContext: null,
   audioSource: null,
   audioProcessor: null,
+  silentGain: null,
   playbackTime: 0,
   playbackSources: new Set(),
   modelTranscript: "",
@@ -555,7 +560,22 @@ async function beginSession({ camera, mic }) {
       await ui.userVideo.play();
       loadVisionModels();
     }
-    if (mic && state.stream) setupAudioInput();
+    if (mic && state.stream) {
+      const activeStream = state.stream;
+      const microphoneTrack = activeStream.getAudioTracks()[0];
+      microphoneTrack?.addEventListener("ended", () => {
+        if (!state.active || state.stream !== activeStream) return;
+        cleanupAudioInput();
+        state.micOn = false;
+        state.muted = false;
+        ui.muteButton.disabled = true;
+        ui.muteButton.classList.add("off");
+        ui.toneCue.textContent = "Microphone stopped";
+        setStatus("Microphone stopped — end and begin again", "connecting");
+        showToast("The microphone stopped. End the conversation, then begin again to restore it.");
+      }, { once: true });
+      setupAudioInput();
+    }
   } catch (error) {
     console.warn("Media permission unavailable", error);
     const message = error?.name === "NotAllowedError" ? "Camera or microphone permission was declined. Text mode is still ready." : "Camera or microphone couldn’t start. Text mode is still ready.";
@@ -610,15 +630,21 @@ async function endSession({ quiet = false } = {}) {
 function setupAudioInput() {
   if (!state.stream?.getAudioTracks().length) return;
   const AudioContext = window.AudioContext || window.webkitAudioContext;
-  state.audioContext ||= new AudioContext();
-  state.audioContext.resume();
+  if (!state.audioContext || state.audioContext.state === "closed") {
+    try {
+      state.audioContext = new AudioContext({ latencyHint: "interactive", sampleRate: 16000 });
+    } catch (_) {
+      state.audioContext = new AudioContext();
+    }
+  }
+  void state.audioContext.resume();
   state.audioSource = state.audioContext.createMediaStreamSource(new MediaStream(state.stream.getAudioTracks()));
   state.audioProcessor = state.audioContext.createScriptProcessor(4096, 1, 1);
-  const silentGain = state.audioContext.createGain();
-  silentGain.gain.value = 0;
+  state.silentGain = state.audioContext.createGain();
+  state.silentGain.gain.value = 0;
   state.audioSource.connect(state.audioProcessor);
-  state.audioProcessor.connect(silentGain);
-  silentGain.connect(state.audioContext.destination);
+  state.audioProcessor.connect(state.silentGain);
+  state.silentGain.connect(state.audioContext.destination);
   state.audioProcessor.onaudioprocess = (event) => {
     if (!state.active || state.muted) return;
     const samples = event.inputBuffer.getChannelData(0);
@@ -627,9 +653,10 @@ function setupAudioInput() {
     const rms = Math.sqrt(sum / samples.length);
     state.smoothedEnergy = state.smoothedEnergy * 0.82 + rms * 0.18;
     updateToneCue(state.smoothedEnergy);
-    if (state.liveSession) {
+    const liveSession = state.liveSession;
+    if (liveSession) {
       try {
-        state.liveSession.sendRealtimeInput({
+        liveSession.sendRealtimeInput({
           audio: {
             data: floatToPcmBase64(samples),
             mimeType: `audio/pcm;rate=${Math.round(state.audioContext.sampleRate)}`,
@@ -637,6 +664,7 @@ function setupAudioInput() {
         });
       } catch (error) {
         console.warn("Audio stream paused", error);
+        handleLiveError("The microphone stream lost its live connection.", state.connectionId);
       }
     }
   };
@@ -648,8 +676,10 @@ function cleanupAudioInput() {
     state.audioProcessor.disconnect();
   }
   state.audioSource?.disconnect();
+  state.silentGain?.disconnect();
   state.audioProcessor = null;
   state.audioSource = null;
+  state.silentGain = null;
   state.smoothedEnergy = 0;
 }
 
@@ -845,6 +875,8 @@ function sendVideoFrame() {
 async function connectGemini(options = {}) {
   if (state.liveConnected) return true;
   if (state.connectionPromise) return state.connectionPromise;
+  clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = null;
   state.connectionPromise = openGeminiConnection(options);
   try {
     return await state.connectionPromise;
@@ -854,6 +886,7 @@ async function connectGemini(options = {}) {
 }
 
 async function openGeminiConnection({ automatic = false } = {}) {
+  const connectionId = ++state.connectionId;
   state.tokenRequestAttempted = true;
   state.connecting = true;
   ui.connectButton.classList.add("loading");
@@ -882,6 +915,8 @@ async function openGeminiConnection({ automatic = false } = {}) {
       inputAudioTranscription: {},
       outputAudioTranscription: {},
       systemInstruction: systemInstructionWithMemory(),
+      contextWindowCompression: { slidingWindow: {} },
+      sessionResumption: state.liveSessionHandle ? { handle: state.liveSessionHandle } : {},
       speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } },
       realtimeInputConfig: {
         automaticActivityDetection: {
@@ -897,16 +932,23 @@ async function openGeminiConnection({ automatic = false } = {}) {
       config,
       callbacks: {
         onopen: () => {},
-        onmessage: handleLiveMessage,
-        onerror: (event) => handleLiveError(event?.message || "The live session reported an error."),
+        onmessage: (message) => handleLiveMessage(message, connectionId),
+        onerror: (event) => handleLiveError(event?.message || "The live session reported an error.", connectionId),
         onclose: () => {
-          if (state.liveConnected) handleLiveError("The live session ended. You can reconnect from settings.");
+          if (state.liveConnected && state.connectionId === connectionId) {
+            handleLiveError("The live session ended unexpectedly.", connectionId);
+          }
         },
       },
     });
+    if (state.connectionId !== connectionId) {
+      try { session.close(); } catch (_) { /* superseded connection */ }
+      return false;
+    }
     state.liveSession = session;
     state.liveConnected = true;
     state.connecting = false;
+    state.reconnectAttempts = 0;
     ui.connectButton.classList.remove("loading");
     ui.connectButton.hidden = true;
     ui.connectButton.textContent = "Retry Gemini Live";
@@ -917,6 +959,7 @@ async function openGeminiConnection({ automatic = false } = {}) {
     if (state.active && state.cameraOn) startVisionLoop();
     return true;
   } catch (error) {
+    if (state.connectionId !== connectionId) return false;
     console.warn("Gemini connection failed", error);
     state.connecting = false;
     state.liveConnected = false;
@@ -940,22 +983,54 @@ function friendlyConnectionError(error) {
   return "Couldn’t open a live connection. Check the key and network, or continue in local mode.";
 }
 
-function handleLiveError(message) {
+function scheduleGeminiReconnect() {
+  if (state.reconnectTimer || state.connecting || state.liveConnected || (!state.user && !state.guest)) return;
+  if (state.reconnectAttempts >= 3) {
+    ui.connectionNote.textContent = "Automatic reconnection paused after three tries. Text mode still works, or use Retry Gemini Live.";
+    ui.connectButton.hidden = false;
+    ui.connectButton.textContent = "Try Gemini Live again";
+    return;
+  }
+  const delay = Math.min(1000 * (2 ** state.reconnectAttempts), 4000);
+  state.reconnectAttempts += 1;
+  ui.geminiStatusHeading.textContent = "Reconnecting automatically…";
+  ui.connectionNote.textContent = "Mira is restoring the live conversation after a brief interruption.";
+  setStatus("Restoring voice connection…", "connecting");
+  state.reconnectTimer = setTimeout(async () => {
+    state.reconnectTimer = null;
+    const connected = await connectGemini({ automatic: true });
+    if (!connected) scheduleGeminiReconnect();
+  }, delay);
+}
+
+function handleLiveError(message, connectionId = state.connectionId) {
+  if (connectionId !== state.connectionId) return;
   console.warn("Gemini Live", message);
+  state.connectionId += 1;
   state.liveConnected = false;
+  state.connecting = false;
+  try { state.liveSession?.close(); } catch (_) { /* already closed */ }
   state.liveSession = null;
   ui.geminiStatusHeading.textContent = "Local mode active";
-  ui.connectionNote.textContent = "The live connection paused. Mira’s private on-device cues and text responses still work.";
+  ui.connectionNote.textContent = "The live connection paused. Mira is restoring it automatically; text responses still work.";
   ui.connectButton.hidden = false;
   ui.connectButton.textContent = "Try Gemini Live again";
   finishUserTranscription();
   finishStreamingMessage();
   stopPlayback();
   setStatus(state.active ? "Listening locally" : "Ready when you are", state.active ? "active" : "idle");
-  showToast("Gemini Live paused. Mira is continuing in local mode.");
+  showToast("The voice connection paused. Mira is reconnecting automatically.");
+  scheduleGeminiReconnect();
 }
 
-function handleLiveMessage(message) {
+function handleLiveMessage(message, connectionId = state.connectionId) {
+  if (connectionId !== state.connectionId) return;
+  const resumption = message?.sessionResumptionUpdate;
+  if (resumption?.resumable && resumption.newHandle) state.liveSessionHandle = resumption.newHandle;
+  if (message?.goAway) {
+    handleLiveError("Gemini requested a routine connection refresh.", connectionId);
+    return;
+  }
   const content = message?.serverContent;
   if (!content) return;
   if (content.interrupted) {
@@ -1048,15 +1123,23 @@ function toggleMute() {
   state.muted = !track.enabled;
   ui.muteButton.classList.toggle("off", state.muted);
   ui.toneCue.textContent = state.muted ? "Microphone paused" : "Listening…";
-  if (state.muted) state.liveSession?.sendRealtimeInput({ audioStreamEnd: true });
+  if (!state.muted) {
+    void state.audioContext?.resume();
+    if (!state.liveConnected) scheduleGeminiReconnect();
+  }
 }
 
 async function resetEverything() {
   await endSession({ quiet: true });
+  state.connectionId += 1;
   try { state.liveSession?.close(); } catch (_) { /* already closed */ }
   state.liveSession = null;
   state.liveConnected = false;
   state.connectionPromise = null;
+  state.liveSessionHandle = "";
+  state.reconnectAttempts = 0;
+  clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = null;
   state.tokenRequestAttempted = false;
   state.faceLandmarker?.close();
   state.poseLandmarker?.close();
@@ -1123,9 +1206,14 @@ ui.memoryCloseButton.addEventListener("click", () => ui.memoryDialog.close());
 ui.eraseMemoryButton.addEventListener("click", eraseAllMemories);
 ui.signOutButton.addEventListener("click", async () => {
   await endSession({ quiet: true });
+  state.connectionId += 1;
   try { state.liveSession?.close(); } catch (_) { /* already closed */ }
   state.liveSession = null;
   state.liveConnected = false;
+  state.liveSessionHandle = "";
+  state.reconnectAttempts = 0;
+  clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = null;
   state.memories = [];
   state.user = null;
   state.guest = false;
@@ -1145,6 +1233,8 @@ for (const dialog of document.querySelectorAll("dialog")) {
 ui.signinDialog.addEventListener("cancel", (event) => event.preventDefault());
 
 window.addEventListener("beforeunload", () => {
+  state.connectionId += 1;
+  clearTimeout(state.reconnectTimer);
   state.stream?.getTracks().forEach((track) => track.stop());
   try { state.liveSession?.close(); } catch (_) { /* page is closing */ }
 });
