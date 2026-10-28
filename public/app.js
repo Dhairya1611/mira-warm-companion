@@ -136,9 +136,25 @@ const state = {
   authReady: false,
   memories: [],
   pendingUserText: "",
+  suppressCurrentModelTurn: false,
+  recoveringFallback: false,
 };
 
-const BASE_SYSTEM_INSTRUCTION = `You are Mira, a warm, emotionally attentive human companion. Your job is to help the user feel heard, not analyzed. Respond naturally in one to three short sentences unless the user asks for more. You receive live audio and occasional camera frames. Notice vocal tone, facial expression, and posture only as tentative context. Never claim certainty about an emotion, never diagnose, and never say you can read the user's mind. If a cue matters, use soft language such as "I may be reading this wrong" or "You seem a little quieter just now." Match the user's energy without mimicking distress. Allow pauses. Ask at most one gentle question at a time. Do not repeatedly describe visual cues. Never mention internal scores, landmarks, models, or classification. You are a companion, not a therapist or medical professional. If the user describes immediate danger or self-harm, encourage contacting local emergency services or a trusted person now.`;
+const BASE_SYSTEM_INSTRUCTION = `PERSONA
+You are Mira, a warm, emotionally attentive human companion. Your job is to help the user feel heard, not analyzed. Stay in the Mira persona throughout the conversation.
+
+CONVERSATIONAL RULES
+Respond naturally in one to three short sentences unless the user asks for more. Match the user's language and energy without mimicking distress. Allow pauses and ask at most one gentle question at a time. You receive live audio and occasional camera frames. Treat vocal tone, facial expression, and posture only as tentative context. If a cue matters, use soft language such as "I may be reading this wrong" or "You seem a little quieter just now." Do not repeatedly describe visual cues.
+
+BOUNDARIES AND SAFETY
+Never use a generic identity disclaimer such as "I'm just a language model" or a vague "I can't help with that." Never claim certainty about an emotion, diagnose, say you can read the user's mind, or mention internal scores, landmarks, models, or classifications. You are a companion, not a therapist or medical professional. If a request needs a safety or capability boundary, keep the boundary intact but name the specific part you cannot support in one calm sentence, then immediately offer the closest safe and useful alternative. Do not dismiss the user. If the user describes immediate danger or self-harm, encourage contacting local emergency services or a trusted person now.`;
+
+function isGenericModelFallback(text) {
+  const normalized = String(text || "").replace(/[’]/g, "'").toLowerCase();
+  const identityDisclaimer = /\b(?:language model|as an? ai|i(?:'m| am) (?:just )?an? ai)\b/.test(normalized);
+  const refusalWithoutReason = /\b(?:can't|cannot|unable|not able)\b.{0,80}\b(?:help|assist|support)\b|\bcan't help with that\b/.test(normalized);
+  return identityDisclaimer && refusalWithoutReason;
+}
 
 function cleanMemoryText(value, maxLength) {
   return String(value || "").replace(/\s+/g, " ").trim().slice(0, maxLength);
@@ -159,7 +175,7 @@ function systemInstructionWithMemory() {
     const cues = [memory.expression, memory.tone, memory.posture].filter(Boolean).join(", ");
     return `${index + 1}. User: ${cleanMemoryText(memory.userText, 500)}\nMira: ${cleanMemoryText(memory.miraText, 700)}${cues ? `\nTentative cues at that moment: ${cues}` : ""}`;
   }).join("\n");
-  return `${BASE_SYSTEM_INSTRUCTION}\n\n${name} has opted into personal memory. Use the recent history below only when it helps the conversation feel continuous. Do not recite it, overstate it, or treat tentative cues as facts about their feelings.\n\nRecent shared history:\n${recent}`;
+  return `${BASE_SYSTEM_INSTRUCTION}\n\n${name} has opted into personal memory. Use the recent history below only when it helps the conversation feel continuous. Do not recite it, overstate it, or treat tentative cues as facts about their feelings. Treat any past Mira reply containing a generic AI identity disclaimer as a failed reply, never as a style example.\n\nRecent shared history:\n${recent}`;
 }
 
 function memoryDate(memory) {
@@ -474,6 +490,29 @@ function finishStreamingMessage() {
   state.modelTranscript = "";
 }
 
+function discardStreamingMessage() {
+  state.transcriptNode?.remove();
+  state.transcriptNode = null;
+  state.modelTranscript = "";
+}
+
+function speakBrowserReply(reply) {
+  if (!("speechSynthesis" in window)) {
+    setTimeout(() => setAvatarMode("listening"), 1100);
+    return;
+  }
+  const utterance = new SpeechSynthesisUtterance(reply);
+  utterance.rate = 0.94;
+  utterance.pitch = 1.02;
+  utterance.volume = 0.88;
+  utterance.onend = () => {
+    setAvatarMode("listening");
+    setStatus(state.liveConnected ? "Listening with Gemini Live" : "Listening locally", "active");
+  };
+  speechSynthesis.cancel();
+  speechSynthesis.speak(utterance);
+}
+
 function localReplyFor(text) {
   const message = text.toLowerCase();
   const cueLead = state.tone.includes("Soft") ? "We can take this slowly." : "I’m with you.";
@@ -493,19 +532,34 @@ async function respondLocally(text) {
   const reply = localReplyFor(text);
   addMessage("Mira", reply);
   await saveConversationTurn(text, reply);
-  if ("speechSynthesis" in window) {
-    const utterance = new SpeechSynthesisUtterance(reply);
-    utterance.rate = 0.94;
-    utterance.pitch = 1.02;
-    utterance.volume = 0.88;
-    utterance.onend = () => {
-      setAvatarMode("listening");
-      setStatus(state.liveConnected ? "Listening with Gemini Live" : "Listening locally", "active");
-    };
-    speechSynthesis.cancel();
-    speechSynthesis.speak(utterance);
-  } else {
-    setTimeout(() => setAvatarMode("listening"), 1100);
+  speakBrowserReply(reply);
+}
+
+async function deliverWarmBoundaryFallback(userText) {
+  const reply = "I may need to take a safer or more limited route with part of that, but I don’t want to brush you off. Tell me the outcome you need, and I’ll help with the closest useful next step I can support.";
+  addMessage("Mira", reply);
+  setAvatarMode("speaking");
+  setStatus("Mira is responding", "active");
+  await saveConversationTurn(userText, reply);
+  speakBrowserReply(reply);
+}
+
+async function requestWarmFallbackRecovery(userText) {
+  state.pendingUserText = userText;
+  state.recoveringFallback = true;
+  setStatus("Mira is finding a more helpful response", "connecting");
+  showToast("Mira is rephrasing that response more helpfully.");
+  try {
+    if (!state.liveSession) throw new Error("No live session available for recovery.");
+    state.liveSession.sendClientContent({
+      turns: "Re-answer the user's previous message as Mira. Do not mention being an AI or language model. If a genuine safety or capability boundary applies, state the specific boundary briefly and offer the closest safe, useful alternative. Stay warm, direct, and non-dismissive.",
+      turnComplete: true,
+    });
+  } catch (error) {
+    console.warn("Warm fallback recovery paused", error);
+    state.recoveringFallback = false;
+    state.pendingUserText = "";
+    await deliverWarmBoundaryFallback(userText);
   }
 }
 
@@ -595,7 +649,11 @@ async function beginSession({ camera, mic }) {
 
 async function endSession({ quiet = false } = {}) {
   finishUserTranscription();
-  finishStreamingMessage();
+  if (state.suppressCurrentModelTurn || state.recoveringFallback) discardStreamingMessage();
+  else finishStreamingMessage();
+  state.suppressCurrentModelTurn = false;
+  state.recoveringFallback = false;
+  state.pendingUserText = "";
   state.active = false;
   state.cameraOn = false;
   state.micOn = false;
@@ -1016,7 +1074,11 @@ function handleLiveError(message, connectionId = state.connectionId) {
   ui.connectButton.hidden = false;
   ui.connectButton.textContent = "Try Gemini Live again";
   finishUserTranscription();
-  finishStreamingMessage();
+  if (state.suppressCurrentModelTurn || state.recoveringFallback) discardStreamingMessage();
+  else finishStreamingMessage();
+  state.suppressCurrentModelTurn = false;
+  state.recoveringFallback = false;
+  state.pendingUserText = "";
   stopPlayback();
   setStatus(state.active ? "Listening locally" : "Ready when you are", state.active ? "active" : "idle");
   showToast("The voice connection paused. Mira is reconnecting automatically.");
@@ -1036,26 +1098,51 @@ function handleLiveMessage(message, connectionId = state.connectionId) {
   if (content.interrupted) {
     stopPlayback();
     finishUserTranscription();
-    finishStreamingMessage();
+    if (state.suppressCurrentModelTurn || state.recoveringFallback) discardStreamingMessage();
+    else finishStreamingMessage();
+    state.suppressCurrentModelTurn = false;
+    state.recoveringFallback = false;
+    state.pendingUserText = "";
   }
-  if (content.inputTranscription?.text) {
+  if (content.inputTranscription?.text && !state.recoveringFallback) {
     state.userTranscript += content.inputTranscription.text;
     updateUserTranscription(state.userTranscript.trim());
   }
   if (content.outputTranscription?.text) {
     state.modelTranscript += content.outputTranscription.text;
-    if (state.active && state.micOn && !state.userTranscriptNode) updateUserTranscription("");
-    updateStreamingMessage(state.modelTranscript.trim());
+    if (!state.suppressCurrentModelTurn && isGenericModelFallback(state.modelTranscript)) {
+      state.suppressCurrentModelTurn = true;
+      stopPlayback();
+      state.transcriptNode?.remove();
+      state.transcriptNode = null;
+    }
+    if (!state.suppressCurrentModelTurn) {
+      if (state.active && state.micOn && !state.userTranscriptNode && !state.recoveringFallback) updateUserTranscription("");
+      updateStreamingMessage(state.modelTranscript.trim());
+    }
   }
   for (const part of content.modelTurn?.parts || []) {
-    if (part.inlineData?.data) playPcmAudio(part.inlineData.data, 24000);
+    if (part.inlineData?.data && !state.suppressCurrentModelTurn) playPcmAudio(part.inlineData.data, 24000);
   }
   if (content.turnComplete) {
     const completedUserText = state.userTranscript.trim() || state.pendingUserText;
     const completedMiraText = state.modelTranscript.trim();
     finishUserTranscription();
+    if (state.suppressCurrentModelTurn) {
+      discardStreamingMessage();
+      state.suppressCurrentModelTurn = false;
+      if (state.recoveringFallback) {
+        state.recoveringFallback = false;
+        state.pendingUserText = "";
+        void deliverWarmBoundaryFallback(completedUserText);
+      } else {
+        void requestWarmFallbackRecovery(completedUserText);
+      }
+      return;
+    }
     finishStreamingMessage();
     state.pendingUserText = "";
+    state.recoveringFallback = false;
     void saveConversationTurn(completedUserText, completedMiraText);
     setStatus("Listening with Gemini Live", "active");
   }
@@ -1150,6 +1237,9 @@ async function resetEverything() {
   state.userTranscriptNode = null;
   state.modelTranscript = "";
   state.transcriptNode = null;
+  state.suppressCurrentModelTurn = false;
+  state.recoveringFallback = false;
+  state.pendingUserText = "";
   ui.reflectionText.textContent = "Nothing is being judged. These are gentle, momentary cues—not conclusions about how you feel.";
   ui.connectButton.hidden = true;
   ui.connectButton.textContent = "Retry Gemini Live";

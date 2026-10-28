@@ -32,7 +32,7 @@ assert.match(html, /permanent key stays on the server/, "secure server-side key 
 assert.match(html, /Gemini Live status/, "the settings panel must present connection status, not setup");
 assert.match(html, /Continue with Google/, "Google sign-in must be visible");
 assert.match(html, /Raw camera frames, audio, face landmarks, and biometric templates are never saved/, "memory consent must explain what is never stored");
-assert.match(html, /app\.js\?v=8/, "the client bundle needs a release cache-buster");
+assert.match(html, /app\.js\?v=9/, "the client bundle needs a release cache-buster");
 assert.match(css, /@media \(max-width: 620px\)/, "mobile layout is required");
 assert.match(css, /prefers-reduced-motion/, "reduced motion support is required");
 assert.match(js, /gemini-3\.8-live/, "Gemini Live model is not configured");
@@ -45,6 +45,10 @@ assert.match(js, /sessionResumption:/, "live sessions need a resumption handle")
 assert.match(js, /sessionResumptionUpdate/, "resumption handles must be retained in memory");
 assert.match(js, /scheduleGeminiReconnect/, "voice connections must recover automatically");
 assert.doesNotMatch(js, /audioStreamEnd/, "temporary mute must not permanently end the microphone stream");
+assert.match(js, /Never use a generic identity disclaimer/, "Mira must not fall out of character with a stock model disclaimer");
+assert.match(js, /isGenericModelFallback/, "generic model fallbacks must be detected");
+assert.match(js, /requestWarmFallbackRecovery/, "generic fallbacks must trigger one warm recovery attempt");
+assert.match(js, /deliverWarmBoundaryFallback/, "a safe local boundary response must remain available");
 assert.match(js, /\/api\/gemini-token/, "ephemeral-token endpoint is not configured");
 assert.match(js, /dhairya1611\.github\.io/, "the GitHub Pages frontend must use the secure token backend");
 assert.match(worker, /GITHUB_PAGES_ORIGIN = "https:\/\/dhairya1611\.github\.io"/, "the token backend must allow only the owner's Pages origin");
