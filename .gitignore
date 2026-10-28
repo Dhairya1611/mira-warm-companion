@@ -3,4 +3,7 @@
 .env.*
 node_modules/
 *.tar.gz
+.firebase/
+firebase-debug.log
+firestore-debug.log
 

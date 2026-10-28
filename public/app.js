@@ -1,7 +1,45 @@
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
+import {
+  browserLocalPersistence,
+  getAuth,
+  GoogleAuthProvider,
+  onAuthStateChanged,
+  setPersistence,
+  signInWithPopup,
+  signOut,
+} from "https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js";
+import {
+  addDoc,
+  collection,
+  deleteDoc,
+  doc,
+  getDocs,
+  getFirestore,
+  limit,
+  orderBy,
+  query,
+  serverTimestamp,
+  setDoc,
+  writeBatch,
+} from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
+
 const $ = (selector) => document.querySelector(selector);
 const GEMINI_TOKEN_ENDPOINT = location.hostname === "dhairya1611.github.io"
   ? "https://mira-warm-companion.dhairya-kukreja.chatgpt.site/api/gemini-token"
   : "/api/gemini-token";
+
+// Firebase's web configuration identifies the app but is not a secret.
+// Per-user Firestore security rules protect every memory document.
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyDvTEq2FoRw54RmD89nkOu2wz2idCIJmIo",
+  authDomain: "single-planet-426007-c7.firebaseapp.com",
+  projectId: "single-planet-426007-c7",
+  storageBucket: "single-planet-426007-c7.firebasestorage.app",
+  messagingSenderId: "699287902759",
+  appId: "1:699287902759:web:75272e3f23bfddab810c02",
+};
+const MEMORY_LIMIT = 30;
+const SESSION_ID = crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
 const ui = {
   avatarStage: $("#avatarStage"),
@@ -24,10 +62,15 @@ const ui = {
   messageForm: $("#messageForm"),
   messageInput: $("#messageInput"),
   settingsButton: $("#settingsButton"),
+  accountButton: $("#accountButton"),
+  accountAvatar: $("#accountAvatar"),
+  accountLabel: $("#accountLabel"),
   privacyButton: $("#privacyButton"),
   resetButton: $("#resetButton"),
   consentDialog: $("#consentDialog"),
   settingsDialog: $("#settingsDialog"),
+  signinDialog: $("#signinDialog"),
+  memoryDialog: $("#memoryDialog"),
   privacyDialog: $("#privacyDialog"),
   cameraConsent: $("#cameraConsent"),
   micConsent: $("#micConsent"),
@@ -36,6 +79,16 @@ const ui = {
   connectButton: $("#connectButton"),
   geminiStatusHeading: $("#geminiStatusHeading"),
   connectionNote: $("#connectionNote"),
+  googleSignInButton: $("#googleSignInButton"),
+  guestButton: $("#guestButton"),
+  accountStatusHeading: $("#accountStatusHeading"),
+  accountStatusNote: $("#accountStatusNote"),
+  manageMemoryButton: $("#manageMemoryButton"),
+  signOutButton: $("#signOutButton"),
+  memoryCloseButton: $("#memoryCloseButton"),
+  memoryIntro: $("#memoryIntro"),
+  memoryList: $("#memoryList"),
+  eraseMemoryButton: $("#eraseMemoryButton"),
   toast: $("#toast"),
 };
 
@@ -71,9 +124,247 @@ const state = {
   tone: "Quiet / settling in",
   smoothedEnergy: 0,
   toastTimer: null,
+  auth: null,
+  db: null,
+  user: null,
+  guest: false,
+  authReady: false,
+  memories: [],
+  pendingUserText: "",
 };
 
-const SYSTEM_INSTRUCTION = `You are Mira, a warm, emotionally attentive human companion. Your job is to help the user feel heard, not analyzed. Respond naturally in one to three short sentences unless the user asks for more. You receive live audio and occasional camera frames. Notice vocal tone, facial expression, and posture only as tentative context. Never claim certainty about an emotion, never diagnose, and never say you can read the user's mind. If a cue matters, use soft language such as "I may be reading this wrong" or "You seem a little quieter just now." Match the user's energy without mimicking distress. Allow pauses. Ask at most one gentle question at a time. Do not repeatedly describe visual cues. Never mention internal scores, landmarks, models, or classification. You are a companion, not a therapist or medical professional. If the user describes immediate danger or self-harm, encourage contacting local emergency services or a trusted person now.`;
+const BASE_SYSTEM_INSTRUCTION = `You are Mira, a warm, emotionally attentive human companion. Your job is to help the user feel heard, not analyzed. Respond naturally in one to three short sentences unless the user asks for more. You receive live audio and occasional camera frames. Notice vocal tone, facial expression, and posture only as tentative context. Never claim certainty about an emotion, never diagnose, and never say you can read the user's mind. If a cue matters, use soft language such as "I may be reading this wrong" or "You seem a little quieter just now." Match the user's energy without mimicking distress. Allow pauses. Ask at most one gentle question at a time. Do not repeatedly describe visual cues. Never mention internal scores, landmarks, models, or classification. You are a companion, not a therapist or medical professional. If the user describes immediate danger or self-harm, encourage contacting local emergency services or a trusted person now.`;
+
+function cleanMemoryText(value, maxLength) {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function cueSnapshot() {
+  return {
+    expression: cleanMemoryText(state.expression, 80),
+    tone: cleanMemoryText(state.tone, 80),
+    posture: cleanMemoryText(state.posture, 80),
+  };
+}
+
+function systemInstructionWithMemory() {
+  if (!state.user || !state.memories.length) return BASE_SYSTEM_INSTRUCTION;
+  const name = cleanMemoryText(state.user.displayName?.split(" ")[0] || "the user", 40);
+  const recent = state.memories.slice(-8).map((memory, index) => {
+    const cues = [memory.expression, memory.tone, memory.posture].filter(Boolean).join(", ");
+    return `${index + 1}. User: ${cleanMemoryText(memory.userText, 500)}\nMira: ${cleanMemoryText(memory.miraText, 700)}${cues ? `\nTentative cues at that moment: ${cues}` : ""}`;
+  }).join("\n");
+  return `${BASE_SYSTEM_INSTRUCTION}\n\n${name} has opted into personal memory. Use the recent history below only when it helps the conversation feel continuous. Do not recite it, overstate it, or treat tentative cues as facts about their feelings.\n\nRecent shared history:\n${recent}`;
+}
+
+function memoryDate(memory) {
+  const date = memory.createdAt?.toDate?.() || (memory.createdAtMs ? new Date(memory.createdAtMs) : null);
+  if (!date || Number.isNaN(date.getTime())) return "Recent conversation";
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
+function renderMemoryList() {
+  ui.memoryList.replaceChildren();
+  if (!state.user) {
+    ui.memoryIntro.textContent = "Sign in with Google to keep a private conversation history across visits.";
+    ui.eraseMemoryButton.disabled = true;
+    const empty = document.createElement("div");
+    empty.className = "memory-empty";
+    empty.textContent = "This private visit will not be remembered after you leave.";
+    ui.memoryList.append(empty);
+    return;
+  }
+  ui.memoryIntro.textContent = "Only your account can read this short history. Mira uses it gently for continuity, never as a diagnosis.";
+  ui.eraseMemoryButton.disabled = !state.memories.length;
+  if (!state.memories.length) {
+    const empty = document.createElement("div");
+    empty.className = "memory-empty";
+    empty.textContent = "Nothing saved yet. Your next completed exchange can become the first memory.";
+    ui.memoryList.append(empty);
+    return;
+  }
+  for (const memory of [...state.memories].reverse()) {
+    const item = document.createElement("article");
+    item.className = "memory-item";
+    const time = document.createElement("time");
+    time.textContent = memoryDate(memory);
+    const userLabel = document.createElement("strong");
+    userLabel.textContent = "You";
+    const userText = document.createElement("p");
+    userText.textContent = memory.userText;
+    const miraLabel = document.createElement("strong");
+    miraLabel.textContent = "Mira";
+    const miraText = document.createElement("p");
+    miraText.textContent = memory.miraText;
+    const cues = document.createElement("p");
+    cues.className = "memory-cues";
+    cues.textContent = `Broad cues: ${[memory.expression, memory.tone, memory.posture].filter(Boolean).join(" · ") || "None noted"}`;
+    item.append(time, userLabel, userText, miraLabel, miraText, cues);
+    ui.memoryList.append(item);
+  }
+}
+
+function setAccountUi() {
+  if (state.user) {
+    const firstName = cleanMemoryText(state.user.displayName?.split(" ")[0] || "You", 28);
+    ui.accountAvatar.textContent = firstName.charAt(0).toUpperCase() || "Y";
+    ui.accountLabel.textContent = firstName;
+    ui.accountStatusHeading.textContent = `Signed in as ${state.user.displayName || "you"}`;
+    ui.accountStatusNote.textContent = `${state.memories.length} saved ${state.memories.length === 1 ? "exchange" : "exchanges"}. Raw camera and audio are never stored.`;
+    ui.signOutButton.hidden = false;
+  } else {
+    ui.accountAvatar.textContent = state.guest ? "P" : "G";
+    ui.accountLabel.textContent = state.guest ? "Private" : "Sign in";
+    ui.accountStatusHeading.textContent = "Private visit";
+    ui.accountStatusNote.textContent = "Sign in to let Mira remember this conversation for next time.";
+    ui.signOutButton.hidden = true;
+  }
+  renderMemoryList();
+}
+
+async function loadMemories() {
+  state.memories = [];
+  if (!state.user || !state.db) return;
+  const memoryQuery = query(
+    collection(state.db, "users", state.user.uid, "memories"),
+    orderBy("createdAt", "desc"),
+    limit(MEMORY_LIMIT),
+  );
+  const snapshot = await getDocs(memoryQuery);
+  state.memories = snapshot.docs.map((item) => ({ id: item.id, ...item.data() })).reverse();
+}
+
+async function saveConversationTurn(userText, miraText) {
+  const cleanUser = cleanMemoryText(userText, 1000);
+  const cleanMira = cleanMemoryText(miraText, 2000);
+  if (!state.user || !state.db || !cleanUser || !cleanMira) return;
+  const cues = cueSnapshot();
+  const payload = {
+    userText: cleanUser,
+    miraText: cleanMira,
+    ...cues,
+    sessionId: SESSION_ID,
+    createdAt: serverTimestamp(),
+    createdAtMs: Date.now(),
+  };
+  try {
+    const memoryRef = await addDoc(collection(state.db, "users", state.user.uid, "memories"), payload);
+    state.memories.push({ id: memoryRef.id, ...payload });
+    if (state.memories.length > MEMORY_LIMIT) {
+      const oldest = state.memories.shift();
+      if (oldest?.id) await deleteDoc(doc(state.db, "users", state.user.uid, "memories", oldest.id));
+    }
+    setAccountUi();
+  } catch (error) {
+    console.warn("Mira memory save paused", error);
+    showToast("Mira couldn’t save this exchange. The conversation can continue privately.");
+  }
+}
+
+async function eraseAllMemories() {
+  if (!state.user || !state.db || !state.memories.length) return;
+  const confirmed = window.confirm("Erase every conversation and cue Mira remembers for this account? This cannot be undone.");
+  if (!confirmed) return;
+  ui.eraseMemoryButton.disabled = true;
+  try {
+    const snapshot = await getDocs(collection(state.db, "users", state.user.uid, "memories"));
+    const batch = writeBatch(state.db);
+    snapshot.docs.forEach((item) => batch.delete(item.ref));
+    batch.delete(doc(state.db, "users", state.user.uid));
+    await batch.commit();
+    state.memories = [];
+    setAccountUi();
+    showToast("Mira’s saved memory was erased.");
+  } catch (error) {
+    console.warn("Memory erase failed", error);
+    ui.eraseMemoryButton.disabled = false;
+    showToast("Mira couldn’t erase memory just now. Please try again.");
+  }
+}
+
+function welcomeFromMemory() {
+  if (!state.user) return;
+  const firstName = cleanMemoryText(state.user.displayName?.split(" ")[0] || "there", 28);
+  const latest = state.memories.at(-1);
+  const message = latest
+    ? `Welcome back, ${firstName}. I remember where we left things, and we can continue gently from there—or begin somewhere new.`
+    : `Welcome, ${firstName}. I’ll remember what you choose to share so tomorrow’s conversation can feel connected.`;
+  ui.conversation.innerHTML = "";
+  addMessage("Mira", message);
+  ui.avatarHeadline.textContent = latest ? `Welcome back, ${firstName}.` : `It’s good to meet you, ${firstName}.`;
+  ui.avatarSubline.textContent = latest ? "I remember the thread, but you can always choose a different direction today." : "What you share can stay with us for your next visit.";
+}
+
+async function finishIdentityChoice() {
+  if (ui.signinDialog.open) ui.signinDialog.close();
+  setAccountUi();
+  if (!state.liveConnected) await connectGemini({ automatic: true });
+}
+
+async function initializeIdentity() {
+  try {
+    const firebaseApp = initializeApp(FIREBASE_CONFIG);
+    state.auth = getAuth(firebaseApp);
+    state.db = getFirestore(firebaseApp);
+    await setPersistence(state.auth, browserLocalPersistence);
+    onAuthStateChanged(state.auth, async (user) => {
+      state.user = user;
+      state.authReady = true;
+      if (user) {
+        state.guest = false;
+        try {
+          await setDoc(doc(state.db, "users", user.uid), {
+            displayName: cleanMemoryText(user.displayName || "Mira user", 80),
+            memoryConsentAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          }, { merge: true });
+          await loadMemories();
+          welcomeFromMemory();
+          await finishIdentityChoice();
+        } catch (error) {
+          console.warn("Mira memory could not load", error);
+          showToast("You’re signed in, but saved memory is temporarily unavailable.");
+          await finishIdentityChoice();
+        }
+      } else if (!state.guest) {
+        state.memories = [];
+        setAccountUi();
+        safeShowModal(ui.signinDialog);
+      }
+    });
+  } catch (error) {
+    console.warn("Identity setup unavailable", error);
+    state.authReady = true;
+    state.guest = true;
+    setAccountUi();
+    safeShowModal(ui.signinDialog);
+  }
+}
+
+async function signInWithGoogle() {
+  if (!state.auth) {
+    showToast("Google sign-in is still being prepared. Private mode remains available.");
+    return;
+  }
+  ui.googleSignInButton.disabled = true;
+  ui.googleSignInButton.querySelector("span").textContent = "Opening Google…";
+  try {
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: "select_account" });
+    await signInWithPopup(state.auth, provider);
+  } catch (error) {
+    console.warn("Google sign-in paused", error);
+    const message = error?.code === "auth/popup-closed-by-user"
+      ? "Sign-in was closed. You can try again or continue privately."
+      : error?.code === "auth/unauthorized-domain"
+        ? "This Mira address still needs to be authorized for Google sign-in."
+        : "Google sign-in couldn’t finish. You can try again or continue privately.";
+    showToast(message);
+  } finally {
+    ui.googleSignInButton.disabled = false;
+    ui.googleSignInButton.querySelector("span").textContent = "Continue with Google";
+  }
+}
 
 function setStatus(label, mode = "idle") {
   ui.sessionStatus.textContent = label;
@@ -196,6 +487,7 @@ async function respondLocally(text) {
   await new Promise((resolve) => setTimeout(resolve, 520));
   const reply = localReplyFor(text);
   addMessage("Mira", reply);
+  await saveConversationTurn(text, reply);
   if ("speechSynthesis" in window) {
     const utterance = new SpeechSynthesisUtterance(reply);
     utterance.rate = 0.94;
@@ -219,6 +511,7 @@ async function submitText(text) {
   ui.messageInput.value = "";
   if (state.liveSession) {
     try {
+      state.pendingUserText = clean;
       state.liveSession.sendClientContent({ turns: clean, turnComplete: true });
       setStatus("Mira is thinking", "active");
       return;
@@ -311,7 +604,7 @@ async function endSession({ quiet = false } = {}) {
   ui.toneCue.textContent = "Waiting for microphone";
   ui.postureCue.textContent = "Waiting for camera";
   setStatus(state.liveConnected ? "Gemini connected — ready when you are" : "Ready when you are");
-  if (!quiet) showToast("Conversation ended. Nothing was saved.");
+  if (!quiet) showToast(state.user ? "Conversation ended. Completed exchanges are in your Mira memory." : "Conversation ended. This private visit was not saved.");
 }
 
 function setupAudioInput() {
@@ -588,7 +881,7 @@ async function openGeminiConnection({ automatic = false } = {}) {
       responseModalities: [genai.Modality.AUDIO],
       inputAudioTranscription: {},
       outputAudioTranscription: {},
-      systemInstruction: SYSTEM_INSTRUCTION,
+      systemInstruction: systemInstructionWithMemory(),
       speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } },
       realtimeInputConfig: {
         automaticActivityDetection: {
@@ -683,8 +976,12 @@ function handleLiveMessage(message) {
     if (part.inlineData?.data) playPcmAudio(part.inlineData.data, 24000);
   }
   if (content.turnComplete) {
+    const completedUserText = state.userTranscript.trim() || state.pendingUserText;
+    const completedMiraText = state.modelTranscript.trim();
     finishUserTranscription();
     finishStreamingMessage();
+    state.pendingUserText = "";
+    void saveConversationTurn(completedUserText, completedMiraText);
     setStatus("Listening with Gemini Live", "active");
   }
 }
@@ -801,18 +1098,51 @@ ui.messageForm.addEventListener("submit", (event) => {
 });
 
 ui.settingsButton.addEventListener("click", () => safeShowModal(ui.settingsDialog));
+ui.accountButton.addEventListener("click", () => {
+  if (state.user) safeShowModal(ui.memoryDialog);
+  else safeShowModal(ui.signinDialog);
+});
 ui.privacyButton.addEventListener("click", () => safeShowModal(ui.privacyDialog));
 ui.resetButton.addEventListener("click", resetEverything);
 ui.cameraButton.addEventListener("click", toggleCamera);
 ui.muteButton.addEventListener("click", toggleMute);
 
 ui.connectButton.addEventListener("click", () => connectGemini());
+ui.googleSignInButton.addEventListener("click", signInWithGoogle);
+ui.guestButton.addEventListener("click", async () => {
+  state.guest = true;
+  state.user = null;
+  await finishIdentityChoice();
+  showToast("Private visit active. Nothing from this visit will be retained.");
+});
+ui.manageMemoryButton.addEventListener("click", () => {
+  ui.settingsDialog.close();
+  safeShowModal(state.user ? ui.memoryDialog : ui.signinDialog);
+});
+ui.memoryCloseButton.addEventListener("click", () => ui.memoryDialog.close());
+ui.eraseMemoryButton.addEventListener("click", eraseAllMemories);
+ui.signOutButton.addEventListener("click", async () => {
+  await endSession({ quiet: true });
+  try { state.liveSession?.close(); } catch (_) { /* already closed */ }
+  state.liveSession = null;
+  state.liveConnected = false;
+  state.memories = [];
+  state.user = null;
+  state.guest = false;
+  await signOut(state.auth);
+  ui.settingsDialog.close();
+  setAccountUi();
+  safeShowModal(ui.signinDialog);
+  showToast("Signed out. Mira’s saved memory remains private to your account.");
+});
 
 for (const dialog of document.querySelectorAll("dialog")) {
   dialog.addEventListener("click", (event) => {
     if (event.target === dialog) dialog.close();
   });
 }
+
+ui.signinDialog.addEventListener("cancel", (event) => event.preventDefault());
 
 window.addEventListener("beforeunload", () => {
   state.stream?.getTracks().forEach((track) => track.stop());
@@ -825,4 +1155,5 @@ if (!navigator.mediaDevices?.getUserMedia) {
   ui.micConsent.checked = false;
 }
 
-void connectGemini({ automatic: true });
+setAccountUi();
+void initializeIdentity();

@@ -1,0 +1,45 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function owns(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+
+    match /users/{userId} {
+      allow read, delete: if owns(userId);
+      allow create, update: if owns(userId)
+        && request.resource.data.keys().hasOnly([
+          'displayName', 'memoryConsentAt', 'updatedAt'
+        ])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() <= 80;
+
+      match /memories/{memoryId} {
+        allow read, delete: if owns(userId);
+        allow update: if false;
+        allow create: if owns(userId)
+          && request.resource.data.keys().hasOnly([
+            'userText', 'miraText', 'expression', 'tone', 'posture',
+            'sessionId', 'createdAt', 'createdAtMs'
+          ])
+          && request.resource.data.userText is string
+          && request.resource.data.userText.size() > 0
+          && request.resource.data.userText.size() <= 1000
+          && request.resource.data.miraText is string
+          && request.resource.data.miraText.size() > 0
+          && request.resource.data.miraText.size() <= 2000
+          && request.resource.data.expression is string
+          && request.resource.data.expression.size() <= 80
+          && request.resource.data.tone is string
+          && request.resource.data.tone.size() <= 80
+          && request.resource.data.posture is string
+          && request.resource.data.posture.size() <= 80
+          && request.resource.data.sessionId is string
+          && request.resource.data.sessionId.size() <= 80
+          && request.resource.data.createdAt is timestamp
+          && request.resource.data.createdAtMs is int;
+      }
+    }
+  }
+}

@@ -19,6 +19,10 @@ const requiredIds = [
   "toneCue",
   "postureCue",
   "messageForm",
+  "signinDialog",
+  "googleSignInButton",
+  "memoryDialog",
+  "eraseMemoryButton",
 ];
 
 for (const id of requiredIds) assert.match(html, new RegExp(`id=["']${id}["']`), `missing #${id}`);
@@ -26,7 +30,9 @@ for (const id of requiredIds) assert.match(html, new RegExp(`id=["']${id}["']`),
 assert.match(html, /Mira offers companionship, not medical advice/, "safety boundary must be visible");
 assert.match(html, /permanent key stays on the server/, "secure server-side key messaging is missing");
 assert.match(html, /Gemini Live status/, "the settings panel must present connection status, not setup");
-assert.match(html, /app\.js\?v=6/, "the client bundle needs a release cache-buster");
+assert.match(html, /Continue with Google/, "Google sign-in must be visible");
+assert.match(html, /Raw camera frames, audio, face landmarks, and biometric templates are never saved/, "memory consent must explain what is never stored");
+assert.match(html, /app\.js\?v=7/, "the client bundle needs a release cache-buster");
 assert.match(css, /@media \(max-width: 620px\)/, "mobile layout is required");
 assert.match(css, /prefers-reduced-motion/, "reduced motion support is required");
 assert.match(js, /gemini-3\.8-live/, "Gemini Live model is not configured");
@@ -38,11 +44,21 @@ assert.match(js, /dhairya1611\.github\.io/, "the GitHub Pages frontend must use 
 assert.match(worker, /GITHUB_PAGES_ORIGIN = "https:\/\/dhairya1611\.github\.io"/, "the token backend must allow only the owner's Pages origin");
 assert.match(worker, /access-control-allow-origin/, "the GitHub Pages token response must include CORS headers");
 assert.match(workflow, /actions\/deploy-pages@v4/, "the GitHub Pages deployment workflow is missing");
-assert.match(js, /void connectGemini\(\{ automatic: true \}\)/, "Gemini must connect automatically on page load");
+assert.match(js, /void initializeIdentity\(\)/, "identity must initialize before Gemini so memory is available to the conversation");
+assert.match(js, /signInWithPopup/, "Google sign-in is not configured");
+assert.match(js, /systemInstructionWithMemory/, "saved context is not supplied to Mira");
+assert.match(js, /saveConversationTurn/, "completed exchanges are not saved");
+assert.match(js, /MEMORY_LIMIT = 30/, "Mira memory needs a bounded history");
+assert.doesNotMatch(js, /__FIREBASE_[A-Z_]+__/, "Firebase web configuration placeholders must not ship");
 assert.match(js, /updateUserTranscription\(state\.userTranscript\.trim\(\)\)/, "spoken words must render as live user transcription");
 assert.match(js, /before: state\.transcriptNode/, "the user transcript must stay before Mira's streamed reply");
 assert.doesNotMatch(js, /apiKeyInput|Paste your key/, "the public client must not ask visitors for a permanent key");
 assert.doesNotMatch(js, /localStorage|sessionStorage/, "API keys and transcripts must not be persisted in browser storage");
+assert.doesNotMatch(js, /audioBlob|videoBlob|faceEmbedding|voiceprint/i, "raw media or biometric templates must not be persisted");
+
+const firestoreRules = await readFile(new URL("../firestore.rules", import.meta.url), "utf8");
+assert.match(firestoreRules, /request\.auth\.uid == userId/, "memory rules must isolate each user's data");
+assert.match(firestoreRules, /allow update: if false/, "saved observations must not be silently rewritten");
 
 const manifest = JSON.parse(hosting);
 assert.ok(manifest.project_id, "hosting project id is missing");

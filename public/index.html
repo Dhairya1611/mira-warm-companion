@@ -15,7 +15,7 @@
       href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=6" />
+    <link rel="stylesheet" href="./styles.css?v=7" />
   </head>
   <body>
     <div class="ambient ambient-one" aria-hidden="true"></div>
@@ -32,9 +32,15 @@
         <span class="privacy-dot" aria-hidden="true"></span>
         Your camera stays on this device
       </div>
-      <button class="icon-button" id="settingsButton" aria-label="Open connection status" title="Connection status">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.25A3.25 3.25 0 1 0 12 8.75a3.25 3.25 0 0 0 0 6.5Zm8-3.25c0-.5-.05-.98-.14-1.45l1.72-1.34-2-3.46-2.02.82a8.03 8.03 0 0 0-2.5-1.45L14.75 3h-4.5l-.31 2.12a8.03 8.03 0 0 0-2.5 1.45l-2.02-.82-2 3.46 1.72 1.34A8.21 8.21 0 0 0 5 12c0 .5.05.98.14 1.45l-1.72 1.34 2 3.46 2.02-.82a8.03 8.03 0 0 0 2.5 1.45l.31 2.12h4.5l.31-2.12a8.03 8.03 0 0 0 2.5-1.45l2.02.82 2-3.46-1.72-1.34c.09-.47.14-.95.14-1.45Z"/></svg>
-      </button>
+      <div class="topbar-actions">
+        <button class="account-button" id="accountButton" aria-label="Open your Mira memory" title="Your Mira memory">
+          <span class="account-avatar" id="accountAvatar" aria-hidden="true">G</span>
+          <span id="accountLabel">Sign in</span>
+        </button>
+        <button class="icon-button" id="settingsButton" aria-label="Open connection status" title="Connection status">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.25A3.25 3.25 0 1 0 12 8.75a3.25 3.25 0 0 0 0 6.5Zm8-3.25c0-.5-.05-.98-.14-1.45l1.72-1.34-2-3.46-2.02.82a8.03 8.03 0 0 0-2.5-1.45L14.75 3h-4.5l-.31 2.12a8.03 8.03 0 0 0-2.5 1.45l-2.02-.82-2 3.46 1.72 1.34A8.21 8.21 0 0 0 5 12c0 .5.05.98.14 1.45l-1.72 1.34 2 3.46 2.02-.82a8.03 8.03 0 0 0 2.5 1.45l.31 2.12h4.5l.31-2.12a8.03 8.03 0 0 0 2.5-1.45l2.02.82 2-3.46-1.72-1.34c.09-.47.14-.95.14-1.45Z"/></svg>
+        </button>
+      </div>
     </header>
 
     <main class="app-shell">
@@ -140,8 +146,29 @@
 
     <footer class="site-footer">
       <p>Mira offers companionship, not medical advice or crisis support.</p>
-      <button id="resetButton">Reset session</button>
+      <button id="resetButton">Clear this session</button>
     </footer>
+
+    <dialog class="dialog signin-dialog" id="signinDialog">
+      <div class="dialog-card signin-card">
+        <div class="signin-brand" aria-hidden="true">
+          <span class="brand-mark"><span></span><span></span><span></span></span>
+        </div>
+        <p class="eyebrow">A space that remembers you</p>
+        <h2>Welcome to Mira.</h2>
+        <p class="dialog-intro">Sign in so Mira can continue from your earlier conversations and remember the broad cues you chose to share.</p>
+        <button class="google-button" id="googleSignInButton" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M21.6 12.23c0-.71-.06-1.4-.18-2.07H12v3.91h5.38a4.6 4.6 0 0 1-2 3.02v2.54h3.24c1.9-1.75 2.98-4.33 2.98-7.4Z"/><path fill="#34A853" d="M12 22c2.7 0 4.97-.9 6.62-2.37l-3.24-2.54c-.9.6-2.05.96-3.38.96-2.6 0-4.81-1.76-5.6-4.12H3.06v2.62A10 10 0 0 0 12 22Z"/><path fill="#FBBC05" d="M6.4 13.93A6 6 0 0 1 6.09 12c0-.67.11-1.32.31-1.93V7.45H3.06A10 10 0 0 0 2 12c0 1.61.39 3.14 1.06 4.55l3.34-2.62Z"/><path fill="#EA4335" d="M12 5.95c1.47 0 2.79.5 3.82 1.5l2.87-2.87A9.63 9.63 0 0 0 12 2a10 10 0 0 0-8.94 5.45l3.34 2.62c.79-2.36 3-4.12 5.6-4.12Z"/></svg>
+          <span>Continue with Google</span>
+        </button>
+        <button class="secondary-button guest-button" id="guestButton" type="button">Continue privately without saving</button>
+        <div class="memory-promise">
+          <strong>You stay in control</strong>
+          <span>Mira saves conversation text and broad cue labels only after sign-in. Raw camera frames, audio, face landmarks, and biometric templates are never saved. You can review or erase memory whenever you want.</span>
+        </div>
+        <p class="signin-footnote">Google sign-in and memory use Firebase’s no-cost tier. If its free quota is reached, saving pauses without charging you.</p>
+      </div>
+    </dialog>
 
     <dialog class="dialog consent-dialog" id="consentDialog">
       <form method="dialog" class="dialog-card" id="consentForm">
@@ -184,7 +211,26 @@
           <span id="connectionNote">Securing a one-use, short-lived token for this visit.</span>
         </div>
         <button class="primary-button full-width" id="connectButton" value="cancel" type="button" hidden>Retry Gemini Live</button>
+        <div class="settings-divider"></div>
+        <p class="eyebrow">Your continuity</p>
+        <div class="plain-language account-status-card">
+          <strong id="accountStatusHeading">Private visit</strong>
+          <span id="accountStatusNote">Sign in to let Mira remember this conversation for next time.</span>
+        </div>
+        <button class="secondary-button bordered-button" id="manageMemoryButton" value="cancel" type="button">What Mira remembers</button>
+        <button class="secondary-button" id="signOutButton" value="cancel" type="button" hidden>Sign out</button>
       </form>
+    </dialog>
+
+    <dialog class="dialog" id="memoryDialog">
+      <div class="dialog-card information-card">
+        <button class="dialog-close" id="memoryCloseButton" type="button" aria-label="Close">×</button>
+        <p class="eyebrow">Your Mira memory</p>
+        <h2>What Mira remembers</h2>
+        <p class="dialog-intro" id="memoryIntro">Mira keeps a short history so each visit can feel continuous.</p>
+        <div class="memory-list" id="memoryList" aria-live="polite"></div>
+        <button class="danger-outline-button" id="eraseMemoryButton" type="button">Erase everything Mira remembers</button>
+      </div>
     </dialog>
 
     <dialog class="dialog" id="privacyDialog">
@@ -196,7 +242,9 @@
           <li><strong>Expression &amp; posture</strong><span>MediaPipe analyses frames locally. Mira shows broad cues, never a diagnosis.</span></li>
           <li><strong>Vocal energy</strong><span>Your browser measures volume locally. It does not decide your emotion.</span></li>
           <li><strong>AI conversation</strong><span>If you connect Gemini, audio and up to one camera frame per second can be sent to Google under its free-tier data terms.</span></li>
-          <li><strong>Storage</strong><span>Mira does not save your video, local cue labels, or transcript. The permanent Gemini key stays in encrypted server configuration.</span></li>
+          <li><strong>Optional memory</strong><span>When you sign in, Mira saves conversation text and only broad, tentative cue labels to your private account so the next visit can continue naturally.</span></li>
+          <li><strong>Never stored</strong><span>Raw video, audio, camera frames, face landmarks, voiceprints, and biometric templates are never saved. The permanent Gemini key stays in encrypted server configuration.</span></li>
+          <li><strong>Your control</strong><span>Open “What Mira remembers” at any time to review or erase your saved history. Private visits are not retained after you leave.</span></li>
         </ul>
         <button class="primary-button full-width" value="default">Got it</button>
       </form>
@@ -204,6 +252,6 @@
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-    <script type="module" src="./app.js?v=6"></script>
+    <script type="module" src="./app.js?v=7"></script>
   </body>
 </html>
