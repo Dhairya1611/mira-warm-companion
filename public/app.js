@@ -43,6 +43,35 @@ const SESSION_ID = crypto.randomUUID?.() || `${Date.now()}-${Math.random().toStr
 const AUDIO_WATCHDOG_INTERVAL_MS = 2000;
 const AUDIO_STALL_LIMIT_MS = 4500;
 const LIVE_IDLE_REFRESH_MS = 30000;
+const VOICE_COOKIE_NAME = "mira_voice";
+const DEFAULT_VOICE_PREFERENCE = "feminine";
+const VOICE_PROFILES = Object.freeze({
+  feminine: {
+    label: "Feminine voice",
+    geminiVoice: "Kore",
+    browserPatterns: [/^Samantha$/i, /^Ava$/i, /^Victoria$/i, /^Karen$/i, /^Moira$/i, /Zira/i, /Aria/i, /female/i],
+    pitch: 1.02,
+    rate: 0.94,
+  },
+  masculine: {
+    label: "Masculine voice",
+    geminiVoice: "Puck",
+    browserPatterns: [/^Daniel$/i, /^Alex$/i, /^Aaron$/i, /^Fred$/i, /David/i, /Mark/i, /Guy/i, /male/i],
+    pitch: 0.96,
+    rate: 0.93,
+  },
+});
+
+function readVoicePreference() {
+  const item = document.cookie.split(";").map((value) => value.trim()).find((value) => value.startsWith(`${VOICE_COOKIE_NAME}=`));
+  const preference = item ? decodeURIComponent(item.slice(VOICE_COOKIE_NAME.length + 1)) : DEFAULT_VOICE_PREFERENCE;
+  return Object.hasOwn(VOICE_PROFILES, preference) ? preference : DEFAULT_VOICE_PREFERENCE;
+}
+
+function rememberVoicePreference(preference) {
+  const secure = location.protocol === "https:" ? "; Secure" : "";
+  document.cookie = `${VOICE_COOKIE_NAME}=${encodeURIComponent(preference)}; Max-Age=31536000; Path=/; SameSite=Lax${secure}`;
+}
 
 const ui = {
   avatarStage: $("#avatarStage"),
@@ -92,6 +121,8 @@ const ui = {
   memoryIntro: $("#memoryIntro"),
   memoryList: $("#memoryList"),
   eraseMemoryButton: $("#eraseMemoryButton"),
+  voiceInputs: [...document.querySelectorAll("[data-voice-preference]")],
+  voiceNotes: [...document.querySelectorAll("[data-voice-note]")],
   toast: $("#toast"),
 };
 
@@ -146,6 +177,8 @@ const state = {
   pendingUserText: "",
   suppressCurrentModelTurn: false,
   recoveringFallback: false,
+  voicePreference: readVoicePreference(),
+  localVoiceNoticeShown: false,
 };
 
 const BASE_SYSTEM_INSTRUCTION = `PERSONA
@@ -407,6 +440,52 @@ function showToast(message) {
   state.toastTimer = setTimeout(() => ui.toast.classList.remove("visible"), 3200);
 }
 
+function selectedVoiceProfile() {
+  return VOICE_PROFILES[state.voicePreference] || VOICE_PROFILES[DEFAULT_VOICE_PREFERENCE];
+}
+
+function syncVoicePreferenceUi() {
+  const profile = selectedVoiceProfile();
+  for (const input of ui.voiceInputs) input.checked = input.value === state.voicePreference;
+  for (const note of ui.voiceNotes) {
+    note.textContent = `${profile.label} selected. This choice stays fixed when Mira reconnects.`;
+  }
+}
+
+async function changeVoicePreference(preference) {
+  if (!Object.hasOwn(VOICE_PROFILES, preference)) return;
+  const changed = state.voicePreference !== preference;
+  state.voicePreference = preference;
+  rememberVoicePreference(preference);
+  syncVoicePreferenceUi();
+  if (!changed) return;
+
+  const profile = selectedVoiceProfile();
+  const pendingConnection = state.connectionPromise;
+  state.liveSessionHandle = "";
+  state.reconnectAttempts = 0;
+  clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = null;
+  stopPlayback();
+  window.speechSynthesis?.cancel();
+  state.connectionId += 1;
+  try { state.liveSession?.close(); } catch (_) { /* session may already be closed */ }
+  state.liveSession = null;
+  state.liveConnected = false;
+  state.connecting = false;
+  ui.geminiStatusHeading.textContent = "Applying your voice choice…";
+  ui.connectionNote.textContent = `${profile.label} will be used for every reply and reconnect.`;
+  setStatus("Switching Mira’s voice…", "connecting");
+
+  if (pendingConnection) {
+    try { await pendingConnection; } catch (_) { /* superseded connection */ }
+  }
+  const connected = (state.user || state.guest) ? await connectGemini({ automatic: true }) : false;
+  showToast(connected
+    ? `${profile.label} selected. Mira will keep this voice.`
+    : `${profile.label} selected for your next conversation.`);
+}
+
 function safeShowModal(dialog) {
   if (!dialog.open) dialog.showModal();
 }
@@ -504,14 +583,49 @@ function discardStreamingMessage() {
   state.modelTranscript = "";
 }
 
-function speakBrowserReply(reply) {
+async function browserVoicesReady() {
+  const synthesis = window.speechSynthesis;
+  let voices = synthesis?.getVoices?.() || [];
+  if (voices.length || !synthesis?.addEventListener) return voices;
+  voices = await new Promise((resolve) => {
+    const finish = () => {
+      synthesis.removeEventListener("voiceschanged", finish);
+      resolve(synthesis.getVoices());
+    };
+    synthesis.addEventListener("voiceschanged", finish);
+    setTimeout(finish, 900);
+  });
+  return voices;
+}
+
+function matchingBrowserVoice(voices, profile) {
+  const englishVoices = voices.filter((voice) => !voice.lang || voice.lang.toLowerCase().startsWith("en"));
+  const candidates = englishVoices.length ? englishVoices : voices;
+  return profile.browserPatterns
+    .map((pattern) => candidates.find((voice) => pattern.test(`${voice.name} ${voice.voiceURI || ""}`)))
+    .find(Boolean) || null;
+}
+
+async function speakBrowserReply(reply) {
   if (!("speechSynthesis" in window)) {
     setTimeout(() => setAvatarMode("listening"), 1100);
     return;
   }
+  const profile = selectedVoiceProfile();
+  const voice = matchingBrowserVoice(await browserVoicesReady(), profile);
+  if (!voice) {
+    setAvatarMode("listening");
+    setStatus(state.liveConnected ? "Listening with Gemini Live" : "Reply shown in text", state.liveConnected ? "active" : "idle");
+    if (!state.localVoiceNoticeShown) {
+      state.localVoiceNoticeShown = true;
+      showToast("This browser doesn’t have a matching local voice, so Mira kept the reply in text instead of changing speakers.");
+    }
+    return;
+  }
   const utterance = new SpeechSynthesisUtterance(reply);
-  utterance.rate = 0.94;
-  utterance.pitch = 1.02;
+  utterance.voice = voice;
+  utterance.rate = profile.rate;
+  utterance.pitch = profile.pitch;
   utterance.volume = 0.88;
   utterance.onend = () => {
     setAvatarMode("listening");
@@ -1121,7 +1235,7 @@ async function openGeminiConnection({ automatic = false } = {}) {
       systemInstruction: systemInstructionWithMemory(),
       contextWindowCompression: { slidingWindow: {} },
       sessionResumption: state.liveSessionHandle ? { handle: state.liveSessionHandle } : {},
-      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } },
+      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: selectedVoiceProfile().geminiVoice } } },
       realtimeInputConfig: {
         automaticActivityDetection: {
           disabled: false,
@@ -1157,7 +1271,7 @@ async function openGeminiConnection({ automatic = false } = {}) {
     ui.connectButton.hidden = true;
     ui.connectButton.textContent = "Retry Gemini Live";
     ui.geminiStatusHeading.textContent = "Connected";
-    ui.connectionNote.textContent = "Gemini Live is ready. Mira will listen when you begin a conversation.";
+    ui.connectionNote.textContent = `Gemini Live is ready with the ${selectedVoiceProfile().label.toLowerCase()}. Mira will listen when you begin a conversation.`;
     setStatus(state.active ? "Listening with Gemini Live" : "Gemini connected — ready when you are", "active");
     if (!automatic) showToast("Gemini Live reconnected securely.");
     if (state.active && state.cameraOn) startVisionLoop();
@@ -1427,6 +1541,11 @@ ui.cameraButton.addEventListener("click", toggleCamera);
 ui.muteButton.addEventListener("click", toggleMute);
 
 ui.connectButton.addEventListener("click", () => connectGemini());
+for (const input of ui.voiceInputs) {
+  input.addEventListener("change", () => {
+    if (input.checked) void changeVoicePreference(input.value);
+  });
+}
 ui.googleSignInButton.addEventListener("click", signInWithGoogle);
 ui.guestButton.addEventListener("click", async () => {
   state.guest = true;
@@ -1507,4 +1626,5 @@ if (!navigator.mediaDevices?.getUserMedia) {
 }
 
 setAccountUi();
+syncVoicePreferenceUi();
 void initializeIdentity();

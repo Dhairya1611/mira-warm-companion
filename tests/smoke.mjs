@@ -23,6 +23,8 @@ const requiredIds = [
   "googleSignInButton",
   "memoryDialog",
   "eraseMemoryButton",
+  "voiceSettings",
+  "voiceSettingsNote",
 ];
 
 for (const id of requiredIds) assert.match(html, new RegExp(`id=["']${id}["']`), `missing #${id}`);
@@ -32,7 +34,12 @@ assert.match(html, /permanent key stays on the server/, "secure server-side key 
 assert.match(html, /Gemini Live status/, "the settings panel must present connection status, not setup");
 assert.match(html, /Continue with Google/, "Google sign-in must be visible");
 assert.match(html, /Raw camera frames, audio, face landmarks, and biometric templates are never saved/, "memory consent must explain what is never stored");
-assert.match(html, /app\.js\?v=10/, "the client bundle needs a release cache-buster");
+assert.match(html, /app\.js\?v=11/, "the client bundle needs a release cache-buster");
+assert.match(html, /styles\.css\?v=11/, "the stylesheet needs a release cache-buster");
+assert.match(html, /Feminine voice/, "the feminine voice choice must be visible");
+assert.match(html, /Masculine voice/, "the masculine voice choice must be visible");
+assert.match(html, /data-voice-preference/, "voice selection controls are missing");
+assert.match(html, /first-party cookie on this browser/, "the privacy panel must disclose voice preference persistence");
 assert.match(css, /@media \(max-width: 620px\)/, "mobile layout is required");
 assert.match(css, /prefers-reduced-motion/, "reduced motion support is required");
 assert.match(js, /gemini-3\.8-live/, "Gemini Live model is not configured");
@@ -43,6 +50,12 @@ assert.match(js, /sampleRate: 16000/, "microphone audio should be resampled to G
 assert.match(js, /contextWindowCompression: \{ slidingWindow: \{\} \}/, "long live sessions need context compression");
 assert.match(js, /sessionResumption:/, "live sessions need a resumption handle");
 assert.match(js, /sessionResumptionUpdate/, "resumption handles must be retained in memory");
+assert.match(js, /geminiVoice: "Kore"/, "the feminine Gemini voice is not configured");
+assert.match(js, /geminiVoice: "Puck"/, "the masculine Gemini voice is not configured");
+assert.match(js, /voiceName: selectedVoiceProfile\(\)\.geminiVoice/, "Gemini must use the selected voice on every connection");
+assert.match(js, /mira_voice/, "the non-sensitive voice preference must persist across visits");
+assert.match(js, /matchingBrowserVoice/, "local fallback must honor the selected voice");
+assert.match(js, /instead of changing speakers/, "local fallback must avoid a mismatched browser voice");
 assert.match(js, /scheduleGeminiReconnect/, "voice connections must recover automatically");
 assert.match(js, /resumeListeningAfterIdle/, "idle tabs must rearm the microphone when the user returns");
 assert.match(js, /recoverMicrophoneTrack/, "ended microphone tracks must recover automatically");

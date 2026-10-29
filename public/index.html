@@ -15,7 +15,7 @@
       href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=9" />
+    <link rel="stylesheet" href="./styles.css?v=11" />
   </head>
   <body>
     <div class="ambient ambient-one" aria-hidden="true"></div>
@@ -179,6 +179,22 @@
         <p class="eyebrow">Before we begin</p>
         <h2>You choose what Mira can notice.</h2>
         <p class="dialog-intro">Turn on only what feels comfortable. You can switch either one off at any time.</p>
+        <fieldset class="voice-picker voice-picker-compact">
+          <legend>Who would you like to hear?</legend>
+          <div class="voice-options">
+            <label class="voice-option">
+              <input type="radio" name="consentVoice" value="feminine" data-voice-preference checked />
+              <span><strong>Feminine voice</strong><small>Warm and firm · Kore</small></span>
+              <span class="voice-check" aria-hidden="true">✓</span>
+            </label>
+            <label class="voice-option">
+              <input type="radio" name="consentVoice" value="masculine" data-voice-preference />
+              <span><strong>Masculine voice</strong><small>Upbeat and steady · Puck</small></span>
+              <span class="voice-check" aria-hidden="true">✓</span>
+            </label>
+          </div>
+          <p class="voice-choice-note" id="voiceConsentNote" data-voice-note></p>
+        </fieldset>
         <label class="permission-row">
           <span class="permission-icon"><svg viewBox="0 0 24 24"><path d="M4 5h11a2 2 0 0 1 2 2v2.17l4-2V17l-4-2.17V17a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z"/></svg></span>
           <span><strong>Camera</strong><small>Read facial and posture cues on this device</small></span>
@@ -203,8 +219,28 @@
         <div class="dialog-symbol key-symbol" aria-hidden="true">
           <svg viewBox="0 0 24 24"><path d="M15 7a5 5 0 1 0-4.6 6.97L13 16.5V19h2.5v2H19v-3.5l-5-5A5 5 0 0 0 15 7Z"/></svg>
         </div>
+        <p class="eyebrow">Your companion</p>
+        <h2>Choose Mira’s voice</h2>
+        <p class="dialog-intro">Pick the voice that feels most comfortable. Mira will keep this choice during reconnections and on your next visit.</p>
+        <fieldset class="voice-picker" id="voiceSettings">
+          <legend class="sr-only">Mira voice preference</legend>
+          <div class="voice-options">
+            <label class="voice-option">
+              <input type="radio" name="settingsVoice" value="feminine" data-voice-preference checked />
+              <span><strong>Feminine voice</strong><small>Warm and firm · Kore</small></span>
+              <span class="voice-check" aria-hidden="true">✓</span>
+            </label>
+            <label class="voice-option">
+              <input type="radio" name="settingsVoice" value="masculine" data-voice-preference />
+              <span><strong>Masculine voice</strong><small>Upbeat and steady · Puck</small></span>
+              <span class="voice-check" aria-hidden="true">✓</span>
+            </label>
+          </div>
+          <p class="voice-choice-note" id="voiceSettingsNote" data-voice-note></p>
+        </fieldset>
+        <div class="settings-divider"></div>
         <p class="eyebrow">AI connection</p>
-        <h2>Gemini Live status</h2>
+        <h3 class="settings-heading">Gemini Live status</h3>
         <p class="dialog-intro">Mira connects automatically using Google’s free tier. The permanent key stays on the server and is never sent to your browser.</p>
         <div class="plain-language" role="status" aria-live="polite">
           <strong id="geminiStatusHeading">Connecting automatically…</strong>
@@ -242,6 +278,7 @@
           <li><strong>Expression &amp; posture</strong><span>MediaPipe analyses frames locally. Mira shows broad cues, never a diagnosis.</span></li>
           <li><strong>Vocal energy</strong><span>Your browser measures volume locally. It does not decide your emotion.</span></li>
           <li><strong>AI conversation</strong><span>If you connect Gemini, audio and up to one camera frame per second can be sent to Google under its free-tier data terms.</span></li>
+          <li><strong>Voice choice</strong><span>Your feminine or masculine voice selection is kept in a first-party cookie on this browser. It contains no conversation text.</span></li>
           <li><strong>Optional memory</strong><span>When you sign in, Mira saves conversation text and only broad, tentative cue labels to your private account so the next visit can continue naturally.</span></li>
           <li><strong>Never stored</strong><span>Raw video, audio, camera frames, face landmarks, voiceprints, and biometric templates are never saved. The permanent Gemini key stays in encrypted server configuration.</span></li>
           <li><strong>Your control</strong><span>Open “What Mira remembers” at any time to review or erase your saved history. Private visits are not retained after you leave.</span></li>
@@ -252,6 +289,6 @@
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-    <script type="module" src="./app.js?v=10"></script>
+    <script type="module" src="./app.js?v=11"></script>
   </body>
 </html>

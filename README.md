@@ -5,6 +5,7 @@ Mira is a privacy-aware human AI companion. It combines:
 - local facial-expression and posture cues using MediaPipe Tasks Vision;
 - local vocal-energy measurement through the Web Audio API;
 - real-time voice and sampled camera understanding through Gemini Live;
+- a persistent feminine or masculine voice choice that is reused on every reconnect;
 - optional Google sign-in with a private, per-user memory of recent exchanges;
 - a text-only local fallback when the free quota, camera, or microphone is unavailable.
 
