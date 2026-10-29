@@ -40,6 +40,9 @@ const FIREBASE_CONFIG = {
 };
 const MEMORY_LIMIT = 30;
 const SESSION_ID = crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+const AUDIO_WATCHDOG_INTERVAL_MS = 2000;
+const AUDIO_STALL_LIMIT_MS = 4500;
+const LIVE_IDLE_REFRESH_MS = 30000;
 
 const ui = {
   avatarStage: $("#avatarStage"),
@@ -118,6 +121,11 @@ const state = {
   audioSource: null,
   audioProcessor: null,
   silentGain: null,
+  lastAudioProcessAt: 0,
+  audioWatchdogId: null,
+  hiddenAt: 0,
+  idleResumePromise: null,
+  microphoneRecoveryPromise: null,
   playbackTime: 0,
   playbackSources: new Set(),
   modelTranscript: "",
@@ -590,6 +598,23 @@ async function requestMedia(useCamera, useMic) {
   });
 }
 
+function bindMicrophoneTrackHandlers(track, stream) {
+  if (!track) return;
+  track.addEventListener("mute", () => {
+    if (!state.active || state.stream !== stream || state.muted) return;
+    ui.toneCue.textContent = "Microphone reconnecting…";
+    setStatus("Restoring your microphone…", "connecting");
+  });
+  track.addEventListener("unmute", () => {
+    if (!state.active || state.stream !== stream || state.muted) return;
+    void resumeListeningAfterIdle({ reason: "microphone" });
+  });
+  track.addEventListener("ended", () => {
+    if (!state.active || state.stream !== stream) return;
+    void recoverMicrophoneTrack();
+  }, { once: true });
+}
+
 async function beginSession({ camera, mic }) {
   if (state.active) return;
   state.active = true;
@@ -617,18 +642,9 @@ async function beginSession({ camera, mic }) {
     if (mic && state.stream) {
       const activeStream = state.stream;
       const microphoneTrack = activeStream.getAudioTracks()[0];
-      microphoneTrack?.addEventListener("ended", () => {
-        if (!state.active || state.stream !== activeStream) return;
-        cleanupAudioInput();
-        state.micOn = false;
-        state.muted = false;
-        ui.muteButton.disabled = true;
-        ui.muteButton.classList.add("off");
-        ui.toneCue.textContent = "Microphone stopped";
-        setStatus("Microphone stopped — end and begin again", "connecting");
-        showToast("The microphone stopped. End the conversation, then begin again to restore it.");
-      }, { once: true });
-      setupAudioInput();
+      bindMicrophoneTrackHandlers(microphoneTrack, activeStream);
+      await setupAudioInput({ rebuild: true });
+      startAudioWatchdog();
     }
   } catch (error) {
     console.warn("Media permission unavailable", error);
@@ -669,6 +685,7 @@ async function endSession({ quiet = false } = {}) {
   ui.cameraButton.classList.remove("off");
   ui.muteButton.classList.remove("off");
   cleanupAudioInput();
+  stopAudioWatchdog();
   stopPlayback();
   window.speechSynthesis?.cancel();
   setAvatarMode("idle");
@@ -685,8 +702,9 @@ async function endSession({ quiet = false } = {}) {
   if (!quiet) showToast(state.user ? "Conversation ended. Completed exchanges are in your Mira memory." : "Conversation ended. This private visit was not saved.");
 }
 
-function setupAudioInput() {
+async function setupAudioInput({ rebuild = false } = {}) {
   if (!state.stream?.getAudioTracks().length) return;
+  if (rebuild) cleanupAudioInput();
   const AudioContext = window.AudioContext || window.webkitAudioContext;
   if (!state.audioContext || state.audioContext.state === "closed") {
     try {
@@ -695,7 +713,18 @@ function setupAudioInput() {
       state.audioContext = new AudioContext();
     }
   }
-  void state.audioContext.resume();
+  state.audioContext.onstatechange = () => {
+    if (
+      state.active
+      && state.micOn
+      && !state.muted
+      && document.visibilityState === "visible"
+      && state.audioContext?.state !== "running"
+    ) {
+      void resumeListeningAfterIdle({ reason: "audio-context" });
+    }
+  };
+  try { await state.audioContext.resume(); } catch (_) { /* retried by the watchdog */ }
   state.audioSource = state.audioContext.createMediaStreamSource(new MediaStream(state.stream.getAudioTracks()));
   state.audioProcessor = state.audioContext.createScriptProcessor(4096, 1, 1);
   state.silentGain = state.audioContext.createGain();
@@ -703,8 +732,10 @@ function setupAudioInput() {
   state.audioSource.connect(state.audioProcessor);
   state.audioProcessor.connect(state.silentGain);
   state.silentGain.connect(state.audioContext.destination);
+  state.lastAudioProcessAt = Date.now();
   state.audioProcessor.onaudioprocess = (event) => {
     if (!state.active || state.muted) return;
+    state.lastAudioProcessAt = Date.now();
     const samples = event.inputBuffer.getChannelData(0);
     let sum = 0;
     for (let i = 0; i < samples.length; i += 1) sum += samples[i] * samples[i];
@@ -739,6 +770,121 @@ function cleanupAudioInput() {
   state.audioSource = null;
   state.silentGain = null;
   state.smoothedEnergy = 0;
+}
+
+function startAudioWatchdog() {
+  clearInterval(state.audioWatchdogId);
+  state.audioWatchdogId = setInterval(() => {
+    if (!state.active || !state.micOn || state.muted || document.visibilityState !== "visible") return;
+    const track = state.stream?.getAudioTracks()[0];
+    const audioStalled = Date.now() - state.lastAudioProcessAt > AUDIO_STALL_LIMIT_MS;
+    if (!track || track.readyState !== "live" || state.audioContext?.state !== "running" || audioStalled) {
+      void resumeListeningAfterIdle({ reason: "watchdog" });
+    }
+  }, AUDIO_WATCHDOG_INTERVAL_MS);
+}
+
+function stopAudioWatchdog() {
+  clearInterval(state.audioWatchdogId);
+  state.audioWatchdogId = null;
+  state.lastAudioProcessAt = 0;
+}
+
+async function recoverMicrophoneTrack() {
+  if (state.microphoneRecoveryPromise) return state.microphoneRecoveryPromise;
+  state.microphoneRecoveryPromise = (async () => {
+    if (!state.active || !state.micOn || state.muted) return false;
+    ui.toneCue.textContent = "Restoring microphone…";
+    setStatus("Restoring your microphone…", "connecting");
+    try {
+      const microphoneStream = await requestMedia(false, true);
+      const replacementTrack = microphoneStream?.getAudioTracks()[0];
+      if (!replacementTrack) throw new Error("No microphone track was returned.");
+      if (!state.active || !state.micOn) {
+        replacementTrack.stop();
+        return false;
+      }
+      const previousStream = state.stream;
+      const videoTracks = previousStream?.getVideoTracks().filter((videoTrack) => videoTrack.readyState === "live") || [];
+      const previousAudioTracks = previousStream?.getAudioTracks() || [];
+      state.stream = new MediaStream([...videoTracks, replacementTrack]);
+      previousAudioTracks.forEach((audioTrack) => audioTrack.stop());
+      if (state.cameraOn) {
+        ui.userVideo.srcObject = state.stream;
+        await ui.userVideo.play().catch(() => {});
+      }
+      bindMicrophoneTrackHandlers(replacementTrack, state.stream);
+      await setupAudioInput({ rebuild: true });
+      startAudioWatchdog();
+      ui.muteButton.disabled = false;
+      ui.muteButton.classList.remove("off");
+      ui.toneCue.textContent = "Listening…";
+      setStatus(state.liveConnected ? "Listening with Gemini Live" : "Restoring voice connection…", state.liveConnected ? "active" : "connecting");
+      return true;
+    } catch (error) {
+      console.warn("Microphone recovery failed", error);
+      state.micOn = false;
+      ui.muteButton.disabled = true;
+      ui.muteButton.classList.add("off");
+      ui.toneCue.textContent = "Tap Begin again to restore microphone";
+      setStatus("Microphone needs your permission again", "connecting");
+      showToast("Mira couldn’t restore the microphone automatically. End and begin once to allow it again.");
+      return false;
+    } finally {
+      state.microphoneRecoveryPromise = null;
+    }
+  })();
+  return state.microphoneRecoveryPromise;
+}
+
+async function refreshLiveConnectionAfterIdle() {
+  const previousSession = state.liveSession;
+  state.connectionId += 1;
+  state.liveSession = null;
+  state.liveConnected = false;
+  state.connecting = false;
+  state.connectionPromise = null;
+  state.reconnectAttempts = 0;
+  try { previousSession?.close(); } catch (_) { /* replaced after inactivity */ }
+  const connected = await connectGemini({ automatic: true });
+  if (!connected) scheduleGeminiReconnect();
+  return connected;
+}
+
+async function resumeListeningAfterIdle({ reason = "return", hiddenFor = 0 } = {}) {
+  if (state.idleResumePromise) return state.idleResumePromise;
+  state.idleResumePromise = (async () => {
+    if (!state.active || !state.micOn || state.muted) return false;
+    const track = state.stream?.getAudioTracks()[0];
+    const audioStalled = Date.now() - state.lastAudioProcessAt > AUDIO_STALL_LIMIT_MS;
+    if (!track || track.readyState !== "live" || (track.muted && audioStalled)) {
+      if (!await recoverMicrophoneTrack()) return false;
+    } else {
+      try { await state.audioContext?.resume(); } catch (_) { /* rebuild below */ }
+      if (!state.audioProcessor || state.audioContext?.state !== "running" || audioStalled) {
+        await setupAudioInput({ rebuild: true });
+      }
+    }
+
+    state.reconnectAttempts = 0;
+    if (hiddenFor >= LIVE_IDLE_REFRESH_MS) await refreshLiveConnectionAfterIdle();
+    else if (!state.liveConnected) {
+      const connected = await connectGemini({ automatic: true });
+      if (!connected) scheduleGeminiReconnect();
+    }
+
+    ui.toneCue.textContent = "Listening…";
+    setStatus(state.liveConnected ? "Listening with Gemini Live" : "Listening while voice reconnects", state.liveConnected ? "active" : "connecting");
+    if ((reason === "visibility" || reason === "focus" || reason === "pageshow") && hiddenFor > 0) {
+      showToast("Welcome back — Mira is listening again.");
+    }
+    return true;
+  })();
+  try {
+    return await state.idleResumePromise;
+  } finally {
+    state.idleResumePromise = null;
+  }
 }
 
 function floatToPcmBase64(samples) {
@@ -1322,9 +1468,34 @@ for (const dialog of document.querySelectorAll("dialog")) {
 
 ui.signinDialog.addEventListener("cancel", (event) => event.preventDefault());
 
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    state.hiddenAt = Date.now();
+    return;
+  }
+  const hiddenFor = state.hiddenAt ? Date.now() - state.hiddenAt : 0;
+  state.hiddenAt = 0;
+  void resumeListeningAfterIdle({ reason: "visibility", hiddenFor });
+});
+
+window.addEventListener("focus", () => {
+  const hiddenFor = state.hiddenAt ? Date.now() - state.hiddenAt : 0;
+  state.hiddenAt = 0;
+  void resumeListeningAfterIdle({ reason: "focus", hiddenFor });
+});
+
+window.addEventListener("pageshow", () => {
+  void resumeListeningAfterIdle({ reason: "pageshow" });
+});
+
+window.addEventListener("online", () => {
+  void resumeListeningAfterIdle({ reason: "online" });
+});
+
 window.addEventListener("beforeunload", () => {
   state.connectionId += 1;
   clearTimeout(state.reconnectTimer);
+  stopAudioWatchdog();
   state.stream?.getTracks().forEach((track) => track.stop());
   try { state.liveSession?.close(); } catch (_) { /* page is closing */ }
 });

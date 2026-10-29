@@ -32,7 +32,7 @@ assert.match(html, /permanent key stays on the server/, "secure server-side key 
 assert.match(html, /Gemini Live status/, "the settings panel must present connection status, not setup");
 assert.match(html, /Continue with Google/, "Google sign-in must be visible");
 assert.match(html, /Raw camera frames, audio, face landmarks, and biometric templates are never saved/, "memory consent must explain what is never stored");
-assert.match(html, /app\.js\?v=9/, "the client bundle needs a release cache-buster");
+assert.match(html, /app\.js\?v=10/, "the client bundle needs a release cache-buster");
 assert.match(css, /@media \(max-width: 620px\)/, "mobile layout is required");
 assert.match(css, /prefers-reduced-motion/, "reduced motion support is required");
 assert.match(js, /gemini-3\.8-live/, "Gemini Live model is not configured");
@@ -44,6 +44,12 @@ assert.match(js, /contextWindowCompression: \{ slidingWindow: \{\} \}/, "long li
 assert.match(js, /sessionResumption:/, "live sessions need a resumption handle");
 assert.match(js, /sessionResumptionUpdate/, "resumption handles must be retained in memory");
 assert.match(js, /scheduleGeminiReconnect/, "voice connections must recover automatically");
+assert.match(js, /resumeListeningAfterIdle/, "idle tabs must rearm the microphone when the user returns");
+assert.match(js, /recoverMicrophoneTrack/, "ended microphone tracks must recover automatically");
+assert.match(js, /startAudioWatchdog/, "the microphone pipeline needs a foreground watchdog");
+assert.match(js, /visibilitychange/, "returning to a backgrounded tab must resume listening");
+assert.match(js, /Welcome back — Mira is listening again\./, "idle recovery should reassure the user when listening resumes");
+assert.doesNotMatch(js, /Microphone stopped — end and begin again/, "an ended microphone track must not require a manual restart by default");
 assert.doesNotMatch(js, /audioStreamEnd/, "temporary mute must not permanently end the microphone stream");
 assert.match(js, /Never use a generic identity disclaimer/, "Mira must not fall out of character with a stock model disclaimer");
 assert.match(js, /isGenericModelFallback/, "generic model fallbacks must be detected");
