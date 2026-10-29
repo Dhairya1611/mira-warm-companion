@@ -5,7 +5,7 @@ const AVATAR_B64 = "__MIRA_AVATAR_B64__";
 
 const tokenWindows = new Map();
 const TOKEN_WINDOW_MS = 10 * 60 * 1000;
-const TOKEN_LIMIT = 5;
+const TOKEN_LIMIT = 20;
 const GITHUB_PAGES_ORIGIN = "https://dhairya1611.github.io";
 
 function decodeText(base64) {
@@ -25,7 +25,7 @@ function securityHeaders(contentType, cacheControl = "no-store") {
     "x-content-type-options": "nosniff",
     "x-frame-options": "DENY",
     "permissions-policy": "camera=(self), microphone=(self), geolocation=()",
-    "content-security-policy": "default-src 'self'; script-src 'self' https://esm.sh https://cdn.jsdelivr.net https://www.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob: https://lh3.googleusercontent.com; media-src 'self' blob:; connect-src 'self' https://generativelanguage.googleapis.com wss://generativelanguage.googleapis.com https://esm.sh https://cdn.jsdelivr.net https://storage.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firestore.googleapis.com wss://firestore.googleapis.com https://www.googleapis.com; frame-src https://accounts.google.com https://single-planet-426007-c7.firebaseapp.com; object-src 'none'; base-uri 'self'; form-action 'self' https://accounts.google.com; frame-ancestors 'none'",
+    "content-security-policy": "default-src 'self'; script-src 'self' blob: https://esm.sh https://cdn.jsdelivr.net https://www.gstatic.com; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob: https://lh3.googleusercontent.com; media-src 'self' blob:; connect-src 'self' https://generativelanguage.googleapis.com wss://generativelanguage.googleapis.com https://esm.sh https://cdn.jsdelivr.net https://storage.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firestore.googleapis.com wss://firestore.googleapis.com https://www.googleapis.com; frame-src https://accounts.google.com https://single-planet-426007-c7.firebaseapp.com; object-src 'none'; base-uri 'self'; form-action 'self' https://accounts.google.com; frame-ancestors 'none'",
   };
 }
 
@@ -52,6 +52,7 @@ function tokenCorsHeaders(origin, url) {
     "access-control-allow-origin": origin,
     "access-control-allow-methods": "POST, OPTIONS",
     "access-control-allow-headers": "content-type",
+    "access-control-expose-headers": "retry-after",
     "access-control-max-age": "600",
     vary: "Origin",
   };
@@ -67,11 +68,16 @@ function consumeTokenAllowance(request) {
   const current = tokenWindows.get(key);
   if (!current || now - current.startedAt >= TOKEN_WINDOW_MS) {
     tokenWindows.set(key, { startedAt: now, count: 1 });
-    return true;
+    return { allowed: true, retryAfterSeconds: 0 };
   }
-  if (current.count >= TOKEN_LIMIT) return false;
+  if (current.count >= TOKEN_LIMIT) {
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(1, Math.ceil((current.startedAt + TOKEN_WINDOW_MS - now) / 1000)),
+    };
+  }
   current.count += 1;
-  return true;
+  return { allowed: true, retryAfterSeconds: 0 };
 }
 
 async function createGeminiToken(request, env, url) {
@@ -82,7 +88,14 @@ async function createGeminiToken(request, env, url) {
     return new Response(null, { status: 204, headers: { ...securityHeaders("text/plain; charset=utf-8"), ...corsHeaders } });
   }
   if (request.method !== "POST") return json({ error: "Method not allowed." }, 405, corsHeaders);
-  if (!consumeTokenAllowance(request)) return json({ error: "Too many connection attempts. Please wait a few minutes." }, 429, corsHeaders);
+  const allowance = consumeTokenAllowance(request);
+  if (!allowance.allowed) {
+    return json(
+      { error: "Too many connection attempts. Mira will retry once after the cooldown.", retryAfterSeconds: allowance.retryAfterSeconds },
+      429,
+      { ...corsHeaders, "retry-after": String(allowance.retryAfterSeconds) },
+    );
+  }
   if (!env.GEMINI_API_KEY) return json({ error: "Gemini is not configured yet." }, 503, corsHeaders);
 
   const expireTime = new Date(Date.now() + 30 * 60 * 1000).toISOString();
@@ -98,7 +111,12 @@ async function createGeminiToken(request, env, url) {
 
   if (!response.ok) {
     const status = response.status === 429 ? 429 : 502;
-    return json({ error: status === 429 ? "The free Gemini quota is resting. Please try again later." : "Gemini could not open a secure session." }, status, corsHeaders);
+    const retryAfterSeconds = status === 429 ? Math.max(15, Number(response.headers.get("retry-after") || 60)) : 0;
+    const extraHeaders = status === 429 ? { ...corsHeaders, "retry-after": String(retryAfterSeconds) } : corsHeaders;
+    return json({
+      error: status === 429 ? "The free Gemini quota is resting. Mira will retry once after the cooldown." : "Gemini could not open a secure session.",
+      ...(status === 429 ? { retryAfterSeconds } : {}),
+    }, status, extraHeaders);
   }
 
   const payload = await response.json();

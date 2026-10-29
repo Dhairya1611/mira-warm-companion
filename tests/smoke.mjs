@@ -34,7 +34,7 @@ assert.match(html, /permanent key stays on the server/, "secure server-side key 
 assert.match(html, /Gemini Live status/, "the settings panel must present connection status, not setup");
 assert.match(html, /Continue with Google/, "Google sign-in must be visible");
 assert.match(html, /Raw camera frames, audio, face landmarks, and biometric templates are never saved/, "memory consent must explain what is never stored");
-assert.match(html, /app\.js\?v=11/, "the client bundle needs a release cache-buster");
+assert.match(html, /app\.js\?v=12/, "the client bundle needs a release cache-buster");
 assert.match(html, /styles\.css\?v=11/, "the stylesheet needs a release cache-buster");
 assert.match(html, /Feminine voice/, "the feminine voice choice must be visible");
 assert.match(html, /Masculine voice/, "the masculine voice choice must be visible");
@@ -60,6 +60,13 @@ assert.match(js, /scheduleGeminiReconnect/, "voice connections must recover auto
 assert.match(js, /resumeListeningAfterIdle/, "idle tabs must rearm the microphone when the user returns");
 assert.match(js, /recoverMicrophoneTrack/, "ended microphone tracks must recover automatically");
 assert.match(js, /startAudioWatchdog/, "the microphone pipeline needs a foreground watchdog");
+assert.match(js, /AudioWorkletNode/, "the microphone pipeline needs a background-resilient AudioWorklet");
+assert.match(js, /mira-microphone-processor/, "the AudioWorklet microphone processor is missing");
+assert.match(js, /microphoneTrackReady/, "the UI must verify a real microphone track before claiming to listen");
+assert.match(js, /Restoring your microphone/, "a stalled microphone must have a visible recovery state");
+assert.match(js, /httpOptions: \{ apiVersion: "v1alpha" \}/, "ephemeral Gemini tokens must use the supported v1alpha client path");
+assert.match(js, /reconnectBlockedUntil/, "Gemini reconnects must respect a rate-limit cooldown");
+assert.doesNotMatch(js, /hiddenFor >= LIVE_IDLE_REFRESH_MS/, "returning to the tab must not replace a healthy Gemini session");
 assert.match(js, /visibilitychange/, "returning to a backgrounded tab must resume listening");
 assert.match(js, /Welcome back — Mira is listening again\./, "idle recovery should reassure the user when listening resumes");
 assert.doesNotMatch(js, /Microphone stopped — end and begin again/, "an ended microphone track must not require a manual restart by default");
@@ -72,6 +79,9 @@ assert.match(js, /\/api\/gemini-token/, "ephemeral-token endpoint is not configu
 assert.match(js, /dhairya1611\.github\.io/, "the GitHub Pages frontend must use the secure token backend");
 assert.match(worker, /GITHUB_PAGES_ORIGIN = "https:\/\/dhairya1611\.github\.io"/, "the token backend must allow only the owner's Pages origin");
 assert.match(worker, /access-control-allow-origin/, "the GitHub Pages token response must include CORS headers");
+assert.match(worker, /TOKEN_LIMIT = 20/, "the token endpoint must allow normal session recovery without a five-request lockout");
+assert.match(worker, /retryAfterSeconds/, "rate-limited clients need an explicit reconnect cooldown");
+assert.match(worker, /worker-src 'self' blob:/, "the AudioWorklet module must be permitted by the Site CSP");
 assert.match(workflow, /actions\/deploy-pages@v4/, "the GitHub Pages deployment workflow is missing");
 assert.match(js, /void initializeIdentity\(\)/, "identity must initialize before Gemini so memory is available to the conversation");
 assert.match(js, /signInWithPopup/, "Google sign-in is not configured");

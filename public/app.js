@@ -42,7 +42,29 @@ const MEMORY_LIMIT = 30;
 const SESSION_ID = crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const AUDIO_WATCHDOG_INTERVAL_MS = 2000;
 const AUDIO_STALL_LIMIT_MS = 4500;
-const LIVE_IDLE_REFRESH_MS = 30000;
+const AUDIO_CHUNK_SIZE = 2048;
+const RECONNECT_COOLDOWN_FALLBACK_MS = 60_000;
+const MIC_PROCESSOR_SOURCE = [
+  "class MiraMicrophoneProcessor extends AudioWorkletProcessor {",
+  "  constructor() { super(); this.buffer = new Float32Array(" + AUDIO_CHUNK_SIZE + "); this.offset = 0; }",
+  "  process(inputs) {",
+  "    const input = inputs[0] && inputs[0][0];",
+  "    if (!input || !input.length) return true;",
+  "    let cursor = 0;",
+  "    while (cursor < input.length) {",
+  "      const count = Math.min(input.length - cursor, this.buffer.length - this.offset);",
+  "      this.buffer.set(input.subarray(cursor, cursor + count), this.offset);",
+  "      this.offset += count; cursor += count;",
+  "      if (this.offset === this.buffer.length) {",
+  "        this.port.postMessage(this.buffer, [this.buffer.buffer]);",
+  "        this.buffer = new Float32Array(" + AUDIO_CHUNK_SIZE + "); this.offset = 0;",
+  "      }",
+  "    }",
+  "    return true;",
+  "  }",
+  "}",
+  "registerProcessor('mira-microphone-processor', MiraMicrophoneProcessor);",
+].join("\n");
 const VOICE_COOKIE_NAME = "mira_voice";
 const DEFAULT_VOICE_PREFERENCE = "feminine";
 const VOICE_PROFILES = Object.freeze({
@@ -147,10 +169,13 @@ const state = {
   liveSessionHandle: "",
   reconnectTimer: null,
   reconnectAttempts: 0,
+  reconnectBlockedUntil: 0,
   tokenRequestAttempted: false,
   audioContext: null,
   audioSource: null,
   audioProcessor: null,
+  audioProcessorKind: "",
+  audioWorkletContext: null,
   silentGain: null,
   lastAudioProcessAt: 0,
   audioWatchdogId: null,
@@ -615,7 +640,8 @@ async function speakBrowserReply(reply) {
   const voice = matchingBrowserVoice(await browserVoicesReady(), profile);
   if (!voice) {
     setAvatarMode("listening");
-    setStatus(state.liveConnected ? "Listening with Gemini Live" : "Reply shown in text", state.liveConnected ? "active" : "idle");
+    if (state.active) updateListeningStatus();
+    else setStatus("Reply shown in text", "idle");
     if (!state.localVoiceNoticeShown) {
       state.localVoiceNoticeShown = true;
       showToast("This browser doesn’t have a matching local voice, so Mira kept the reply in text instead of changing speakers.");
@@ -629,7 +655,7 @@ async function speakBrowserReply(reply) {
   utterance.volume = 0.88;
   utterance.onend = () => {
     setAvatarMode("listening");
-    setStatus(state.liveConnected ? "Listening with Gemini Live" : "Listening locally", "active");
+    updateListeningStatus();
   };
   speechSynthesis.cancel();
   speechSynthesis.speak(utterance);
@@ -718,6 +744,9 @@ function bindMicrophoneTrackHandlers(track, stream) {
     if (!state.active || state.stream !== stream || state.muted) return;
     ui.toneCue.textContent = "Microphone reconnecting…";
     setStatus("Restoring your microphone…", "connecting");
+    setTimeout(() => {
+      if (state.active && state.stream === stream && track.muted && !state.muted) void recoverMicrophoneTrack();
+    }, 1200);
   });
   track.addEventListener("unmute", () => {
     if (!state.active || state.stream !== stream || state.muted) return;
@@ -756,8 +785,9 @@ async function beginSession({ camera, mic }) {
     if (mic && state.stream) {
       const activeStream = state.stream;
       const microphoneTrack = activeStream.getAudioTracks()[0];
+      if (!microphoneTrack) throw new Error("No microphone track was returned.");
       bindMicrophoneTrackHandlers(microphoneTrack, activeStream);
-      await setupAudioInput({ rebuild: true });
+      if (!await setupAudioInput({ rebuild: true })) throw new Error("The microphone audio pipeline did not start.");
       startAudioWatchdog();
     }
   } catch (error) {
@@ -773,7 +803,7 @@ async function beginSession({ camera, mic }) {
 
   if (!state.liveConnected) await connectGemini({ automatic: true });
   setAvatarMode("listening");
-  setStatus(state.liveConnected ? "Listening with Gemini Live" : "Listening locally", "active");
+  updateListeningStatus();
   if (state.liveConnected) startVisionLoop();
 }
 
@@ -816,8 +846,81 @@ async function endSession({ quiet = false } = {}) {
   if (!quiet) showToast(state.user ? "Conversation ended. Completed exchanges are in your Mira memory." : "Conversation ended. This private visit was not saved.");
 }
 
+function microphoneTrackReady() {
+  const track = state.stream?.getAudioTracks()[0];
+  return Boolean(track && track.readyState === "live" && track.enabled && !track.muted);
+}
+
+function updateListeningStatus() {
+  if (!state.active) return;
+  if (!state.micOn) {
+    setStatus(state.liveConnected ? "Gemini connected — text mode" : "Text mode ready", state.liveConnected ? "active" : "idle");
+    return;
+  }
+  if (state.muted) {
+    setStatus("Microphone paused", "idle");
+    return;
+  }
+  const audioFresh = Date.now() - state.lastAudioProcessAt <= AUDIO_STALL_LIMIT_MS;
+  if (!microphoneTrackReady() || state.audioContext?.state !== "running" || !state.audioProcessor || !audioFresh) {
+    setStatus("Restoring your microphone…", "connecting");
+    ui.toneCue.textContent = "Restoring microphone…";
+    return;
+  }
+  setStatus(state.liveConnected ? "Listening with Gemini Live" : "Microphone ready — reconnecting voice", state.liveConnected ? "active" : "connecting");
+}
+
+function handleMicrophoneSamples(samples) {
+  if (!state.active || !state.micOn || state.muted || !samples?.length) return;
+  state.lastAudioProcessAt = Date.now();
+  let sum = 0;
+  for (let i = 0; i < samples.length; i += 1) sum += samples[i] * samples[i];
+  const rms = Math.sqrt(sum / samples.length);
+  state.smoothedEnergy = state.smoothedEnergy * 0.82 + rms * 0.18;
+  updateToneCue(state.smoothedEnergy);
+  const liveSession = state.liveSession;
+  if (!liveSession) return;
+  try {
+    liveSession.sendRealtimeInput({
+      audio: {
+        data: floatToPcmBase64(samples),
+        mimeType: `audio/pcm;rate=${Math.round(state.audioContext.sampleRate)}`,
+      },
+    });
+  } catch (error) {
+    console.warn("Audio stream paused", error);
+    handleLiveError("The microphone stream lost its live connection.", state.connectionId);
+  }
+}
+
+async function createMicrophoneProcessor(audioContext) {
+  if (audioContext.audioWorklet && typeof AudioWorkletNode === "function") {
+    try {
+      if (state.audioWorkletContext !== audioContext) {
+        const moduleUrl = URL.createObjectURL(new Blob([MIC_PROCESSOR_SOURCE], { type: "text/javascript" }));
+        try {
+          await audioContext.audioWorklet.addModule(moduleUrl);
+          state.audioWorkletContext = audioContext;
+        } finally {
+          URL.revokeObjectURL(moduleUrl);
+        }
+      }
+      const processor = new AudioWorkletNode(audioContext, "mira-microphone-processor");
+      processor.port.onmessage = (event) => handleMicrophoneSamples(event.data);
+      return { processor, kind: "worklet" };
+    } catch (error) {
+      console.warn("AudioWorklet unavailable; using compatibility microphone processing", error);
+    }
+  }
+  const processor = audioContext.createScriptProcessor(4096, 1, 1);
+  processor.onaudioprocess = (event) => handleMicrophoneSamples(event.inputBuffer.getChannelData(0));
+  return { processor, kind: "script" };
+}
+
 async function setupAudioInput({ rebuild = false } = {}) {
-  if (!state.stream?.getAudioTracks().length) return;
+  const activeStream = state.stream;
+  const track = activeStream?.getAudioTracks()[0];
+  if (!track || track.readyState !== "live") return false;
   if (rebuild) cleanupAudioInput();
   const AudioContext = window.AudioContext || window.webkitAudioContext;
   if (!state.audioContext || state.audioContext.state === "closed") {
@@ -827,60 +930,48 @@ async function setupAudioInput({ rebuild = false } = {}) {
       state.audioContext = new AudioContext();
     }
   }
-  state.audioContext.onstatechange = () => {
+  const audioContext = state.audioContext;
+  audioContext.onstatechange = () => {
     if (
       state.active
       && state.micOn
       && !state.muted
       && document.visibilityState === "visible"
-      && state.audioContext?.state !== "running"
+      && audioContext.state !== "running"
     ) {
       void resumeListeningAfterIdle({ reason: "audio-context" });
     }
   };
-  try { await state.audioContext.resume(); } catch (_) { /* retried by the watchdog */ }
-  state.audioSource = state.audioContext.createMediaStreamSource(new MediaStream(state.stream.getAudioTracks()));
-  state.audioProcessor = state.audioContext.createScriptProcessor(4096, 1, 1);
-  state.silentGain = state.audioContext.createGain();
+  try { await audioContext.resume(); } catch (_) { /* retried by the watchdog */ }
+  if (state.stream !== activeStream || track.readyState !== "live") return false;
+  const { processor, kind } = await createMicrophoneProcessor(audioContext);
+  if (state.stream !== activeStream || track.readyState !== "live") {
+    processor.disconnect();
+    return false;
+  }
+  state.audioSource = audioContext.createMediaStreamSource(new MediaStream([track]));
+  state.audioProcessor = processor;
+  state.audioProcessorKind = kind;
+  state.silentGain = audioContext.createGain();
   state.silentGain.gain.value = 0;
-  state.audioSource.connect(state.audioProcessor);
-  state.audioProcessor.connect(state.silentGain);
-  state.silentGain.connect(state.audioContext.destination);
+  state.audioSource.connect(processor);
+  processor.connect(state.silentGain);
+  state.silentGain.connect(audioContext.destination);
   state.lastAudioProcessAt = Date.now();
-  state.audioProcessor.onaudioprocess = (event) => {
-    if (!state.active || state.muted) return;
-    state.lastAudioProcessAt = Date.now();
-    const samples = event.inputBuffer.getChannelData(0);
-    let sum = 0;
-    for (let i = 0; i < samples.length; i += 1) sum += samples[i] * samples[i];
-    const rms = Math.sqrt(sum / samples.length);
-    state.smoothedEnergy = state.smoothedEnergy * 0.82 + rms * 0.18;
-    updateToneCue(state.smoothedEnergy);
-    const liveSession = state.liveSession;
-    if (liveSession) {
-      try {
-        liveSession.sendRealtimeInput({
-          audio: {
-            data: floatToPcmBase64(samples),
-            mimeType: `audio/pcm;rate=${Math.round(state.audioContext.sampleRate)}`,
-          },
-        });
-      } catch (error) {
-        console.warn("Audio stream paused", error);
-        handleLiveError("The microphone stream lost its live connection.", state.connectionId);
-      }
-    }
-  };
+  updateListeningStatus();
+  return true;
 }
 
 function cleanupAudioInput() {
   if (state.audioProcessor) {
+    if (state.audioProcessor.port) state.audioProcessor.port.onmessage = null;
     state.audioProcessor.onaudioprocess = null;
     state.audioProcessor.disconnect();
   }
   state.audioSource?.disconnect();
   state.silentGain?.disconnect();
   state.audioProcessor = null;
+  state.audioProcessorKind = "";
   state.audioSource = null;
   state.silentGain = null;
   state.smoothedEnergy = 0;
@@ -892,7 +983,13 @@ function startAudioWatchdog() {
     if (!state.active || !state.micOn || state.muted || document.visibilityState !== "visible") return;
     const track = state.stream?.getAudioTracks()[0];
     const audioStalled = Date.now() - state.lastAudioProcessAt > AUDIO_STALL_LIMIT_MS;
-    if (!track || track.readyState !== "live" || state.audioContext?.state !== "running" || audioStalled) {
+    if (!track || track.readyState !== "live" || track.muted) {
+      updateListeningStatus();
+      void recoverMicrophoneTrack();
+      return;
+    }
+    if (state.audioContext?.state !== "running" || !state.audioProcessor || audioStalled) {
+      updateListeningStatus();
       void resumeListeningAfterIdle({ reason: "watchdog" });
     }
   }, AUDIO_WATCHDOG_INTERVAL_MS);
@@ -928,12 +1025,12 @@ async function recoverMicrophoneTrack() {
         await ui.userVideo.play().catch(() => {});
       }
       bindMicrophoneTrackHandlers(replacementTrack, state.stream);
-      await setupAudioInput({ rebuild: true });
+      if (!await setupAudioInput({ rebuild: true })) throw new Error("The replacement microphone pipeline did not start.");
       startAudioWatchdog();
       ui.muteButton.disabled = false;
       ui.muteButton.classList.remove("off");
       ui.toneCue.textContent = "Listening…";
-      setStatus(state.liveConnected ? "Listening with Gemini Live" : "Restoring voice connection…", state.liveConnected ? "active" : "connecting");
+      updateListeningStatus();
       return true;
     } catch (error) {
       console.warn("Microphone recovery failed", error);
@@ -952,14 +1049,7 @@ async function recoverMicrophoneTrack() {
 }
 
 async function refreshLiveConnectionAfterIdle() {
-  const previousSession = state.liveSession;
-  state.connectionId += 1;
-  state.liveSession = null;
-  state.liveConnected = false;
-  state.connecting = false;
-  state.connectionPromise = null;
-  state.reconnectAttempts = 0;
-  try { previousSession?.close(); } catch (_) { /* replaced after inactivity */ }
+  if (state.liveConnected && state.liveSession) return true;
   const connected = await connectGemini({ automatic: true });
   if (!connected) scheduleGeminiReconnect();
   return connected;
@@ -980,15 +1070,10 @@ async function resumeListeningAfterIdle({ reason = "return", hiddenFor = 0 } = {
       }
     }
 
-    state.reconnectAttempts = 0;
-    if (hiddenFor >= LIVE_IDLE_REFRESH_MS) await refreshLiveConnectionAfterIdle();
-    else if (!state.liveConnected) {
-      const connected = await connectGemini({ automatic: true });
-      if (!connected) scheduleGeminiReconnect();
-    }
+    if (!state.liveConnected || !state.liveSession) await refreshLiveConnectionAfterIdle();
 
     ui.toneCue.textContent = "Listening…";
-    setStatus(state.liveConnected ? "Listening with Gemini Live" : "Listening while voice reconnects", state.liveConnected ? "active" : "connecting");
+    updateListeningStatus();
     if ((reason === "visibility" || reason === "focus" || reason === "pageshow") && hiddenFor > 0) {
       showToast("Welcome back — Mira is listening again.");
     }
@@ -1193,13 +1278,21 @@ function sendVideoFrame() {
 async function connectGemini(options = {}) {
   if (state.liveConnected) return true;
   if (state.connectionPromise) return state.connectionPromise;
+  const cooldownRemaining = state.reconnectBlockedUntil - Date.now();
+  if (cooldownRemaining > 0) {
+    const seconds = Math.max(1, Math.ceil(cooldownRemaining / 1000));
+    ui.geminiStatusHeading.textContent = "Reconnect cooling down…";
+    ui.connectionNote.textContent = `Mira will retry once in about ${seconds} seconds. Text mode remains ready.`;
+    return false;
+  }
   clearTimeout(state.reconnectTimer);
   state.reconnectTimer = null;
-  state.connectionPromise = openGeminiConnection(options);
+  const connectionPromise = openGeminiConnection(options);
+  state.connectionPromise = connectionPromise;
   try {
-    return await state.connectionPromise;
+    return await connectionPromise;
   } finally {
-    state.connectionPromise = null;
+    if (state.connectionPromise === connectionPromise) state.connectionPromise = null;
   }
 }
 
@@ -1224,10 +1317,12 @@ async function openGeminiConnection({ automatic = false } = {}) {
     if (!tokenResponse.ok || !tokenPayload.token) {
       const error = new Error(tokenPayload.error || "Mira could not request a Gemini session token.");
       error.status = tokenResponse.status;
+      const retryAfterSeconds = Number(tokenPayload.retryAfterSeconds || tokenResponse.headers.get("retry-after") || 0);
+      if (retryAfterSeconds > 0) error.retryAfterMs = retryAfterSeconds * 1000;
       throw error;
     }
     const genai = await import("https://esm.sh/@google/genai?bundle");
-    const ai = new genai.GoogleGenAI({ apiKey: tokenPayload.token });
+    const ai = new genai.GoogleGenAI({ apiKey: tokenPayload.token, httpOptions: { apiVersion: "v1alpha" } });
     const config = {
       responseModalities: [genai.Modality.AUDIO],
       inputAudioTranscription: {},
@@ -1267,12 +1362,14 @@ async function openGeminiConnection({ automatic = false } = {}) {
     state.liveConnected = true;
     state.connecting = false;
     state.reconnectAttempts = 0;
+    state.reconnectBlockedUntil = 0;
     ui.connectButton.classList.remove("loading");
     ui.connectButton.hidden = true;
     ui.connectButton.textContent = "Retry Gemini Live";
     ui.geminiStatusHeading.textContent = "Connected";
     ui.connectionNote.textContent = `Gemini Live is ready with the ${selectedVoiceProfile().label.toLowerCase()}. Mira will listen when you begin a conversation.`;
-    setStatus(state.active ? "Listening with Gemini Live" : "Gemini connected — ready when you are", "active");
+    if (state.active) updateListeningStatus();
+    else setStatus("Gemini connected — ready when you are", "active");
     if (!automatic) showToast("Gemini Live reconnected securely.");
     if (state.active && state.cameraOn) startVisionLoop();
     return true;
@@ -1282,12 +1379,16 @@ async function openGeminiConnection({ automatic = false } = {}) {
     state.connecting = false;
     state.liveConnected = false;
     state.liveSession = null;
+    if (error?.status === 429) {
+      state.reconnectBlockedUntil = Date.now() + Math.max(error.retryAfterMs || RECONNECT_COOLDOWN_FALLBACK_MS, 15_000);
+    }
     ui.connectButton.classList.remove("loading");
     ui.connectButton.hidden = false;
     ui.connectButton.textContent = "Try Gemini Live again";
     ui.geminiStatusHeading.textContent = "Local mode active";
     ui.connectionNote.textContent = friendlyConnectionError(error);
-    setStatus(state.active ? "Listening locally" : "Ready when you are", state.active ? "active" : "idle");
+    if (state.active) updateListeningStatus();
+    else setStatus("Ready when you are");
     if (automatic) showToast("Gemini is unavailable just now. Mira is continuing locally.");
     return false;
   }
@@ -1303,6 +1404,20 @@ function friendlyConnectionError(error) {
 
 function scheduleGeminiReconnect() {
   if (state.reconnectTimer || state.connecting || state.liveConnected || (!state.user && !state.guest)) return;
+  const cooldownRemaining = state.reconnectBlockedUntil - Date.now();
+  if (cooldownRemaining > 0) {
+    const seconds = Math.max(1, Math.ceil(cooldownRemaining / 1000));
+    ui.geminiStatusHeading.textContent = "Reconnect cooling down…";
+    ui.connectionNote.textContent = `Mira will make one retry in about ${seconds} seconds instead of repeatedly requesting new sessions.`;
+    if (state.active) updateListeningStatus();
+    else setStatus("Voice reconnecting soon", "connecting");
+    state.reconnectTimer = setTimeout(async () => {
+      state.reconnectTimer = null;
+      const connected = await connectGemini({ automatic: true });
+      if (!connected) scheduleGeminiReconnect();
+    }, cooldownRemaining + 250);
+    return;
+  }
   if (state.reconnectAttempts >= 3) {
     ui.connectionNote.textContent = "Automatic reconnection paused after three tries. Text mode still works, or use Retry Gemini Live.";
     ui.connectButton.hidden = false;
@@ -1313,7 +1428,8 @@ function scheduleGeminiReconnect() {
   state.reconnectAttempts += 1;
   ui.geminiStatusHeading.textContent = "Reconnecting automatically…";
   ui.connectionNote.textContent = "Mira is restoring the live conversation after a brief interruption.";
-  setStatus("Restoring voice connection…", "connecting");
+  if (state.active) updateListeningStatus();
+  else setStatus("Restoring voice connection…", "connecting");
   state.reconnectTimer = setTimeout(async () => {
     state.reconnectTimer = null;
     const connected = await connectGemini({ automatic: true });
@@ -1340,7 +1456,8 @@ function handleLiveError(message, connectionId = state.connectionId) {
   state.recoveringFallback = false;
   state.pendingUserText = "";
   stopPlayback();
-  setStatus(state.active ? "Listening locally" : "Ready when you are", state.active ? "active" : "idle");
+  if (state.active) updateListeningStatus();
+  else setStatus("Ready when you are");
   showToast("The voice connection paused. Mira is reconnecting automatically.");
   scheduleGeminiReconnect();
 }
@@ -1404,7 +1521,7 @@ function handleLiveMessage(message, connectionId = state.connectionId) {
     state.pendingUserText = "";
     state.recoveringFallback = false;
     void saveConversationTurn(completedUserText, completedMiraText);
-    setStatus("Listening with Gemini Live", "active");
+    updateListeningStatus();
   }
 }
 
@@ -1431,7 +1548,7 @@ function playPcmAudio(base64, sampleRate) {
     state.playbackSources.delete(source);
     if (!state.playbackSources.size) {
       setAvatarMode("listening");
-      if (state.active) setStatus("Listening with Gemini Live", "active");
+      if (state.active) updateListeningStatus();
     }
   };
   setAvatarMode("speaking");
@@ -1465,7 +1582,12 @@ function toggleCamera() {
 
 function toggleMute() {
   const track = state.stream?.getAudioTracks()[0];
-  if (!track) return;
+  if (!track || track.readyState !== "live") {
+    ui.toneCue.textContent = "Restoring microphone…";
+    setStatus("Restoring your microphone…", "connecting");
+    void recoverMicrophoneTrack();
+    return;
+  }
   track.enabled = !track.enabled;
   state.muted = !track.enabled;
   ui.muteButton.classList.toggle("off", state.muted);
@@ -1474,6 +1596,7 @@ function toggleMute() {
     void state.audioContext?.resume();
     if (!state.liveConnected) scheduleGeminiReconnect();
   }
+  updateListeningStatus();
 }
 
 async function resetEverything() {
